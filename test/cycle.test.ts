@@ -47,7 +47,7 @@ describe("healthy market", () => {
   it("publishes XRD from consensus and prices every token", async () => {
     const { state, log } = await cycle(T0);
     expect(state.status, log.join("\n")).toBe("ok");
-    expect(state.xrd?.sources).toEqual(["coingecko", "coinpaprika", "hUSDC@defiplaza"]);
+    expect(state.xrd?.sources).toEqual(["coingecko", "mexc", "hUSDC@defiplaza"]);
     const p = await priced(T0);
     expect(p[XRD]).toBeCloseTo(0.0003, 6);
     expect(p[A.hUSDC]).toBeCloseTo(1, 2);
@@ -94,7 +94,7 @@ describe("drained pools", () => {
   it("stops using a drained stablecoin pool and alerts, XRD continues from off-chain", async () => {
     m.plaza[C.husdcPlaza].xrd = 1000; // $0.60 left
     const { state } = await cycle(T0);
-    expect(state.xrd?.sources).toEqual(["coingecko", "coinpaprika"]);
+    expect(state.xrd?.sources).toEqual(["coingecko", "mexc"]);
     expect(state.issues.join()).toMatch(/hUSDC pool on defiplaza is not usable/);
     expect((await priced(T0))[XRD]).toBeCloseTo(0.0003, 6);
   });
@@ -128,7 +128,7 @@ describe("source outages", () => {
   it("serves the last good price for up to 15 minutes, then nothing", async () => {
     await cycle(T0);
     m.cg = "down";
-    m.paprika = "down";
+    m.mexc = "down";
     const { state } = await cycle(T0 + 60);
     expect(state.status).toBe("stale");
     expect((await priced(T0 + 60))[XRD]).toBeCloseTo(0.0003, 6);
@@ -153,7 +153,7 @@ describe("source outages", () => {
 
   it("continues on one off-chain source near the last validated price", async () => {
     await cycle(T0);
-    m.paprika = "down";
+    m.mexc = "down";
     m.cg = { ...(m.cg as Record<string, number>), radix: 0.00031 };
     m.plaza[C.husdcPlaza].xrd = 1000; // and the on-chain witness is unusable
     const { state } = await cycle(T0 + 60);
@@ -162,7 +162,7 @@ describe("source outages", () => {
   });
 
   it("refuses to start from a single source with no history", async () => {
-    m.paprika = "down";
+    m.mexc = "down";
     m.plaza[C.husdcPlaza].xrd = 1000;
     const { state } = await cycle(T0);
     expect(state.status).toBe("stale");
@@ -175,7 +175,7 @@ describe("sudden XRD moves", () => {
     await cycle(T0);
     const up = (v: number) => {
       m.cg = { ...(m.cg as Record<string, number>), radix: v };
-      m.paprika = v;
+      m.mexc = v;
       m.plaza[C.husdcPlaza].p0 = 1 / v;
     };
     up(0.00045);
@@ -303,5 +303,41 @@ describe("Gateway rate limiting", () => {
     m.calls = [];
     await cycle(T0 + 60);
     expect(m.calls.filter((c) => c.startsWith("gateway.test")).length).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("off-chain XRD sources", () => {
+  it("counts every source that answers: CoinGecko, MEXC and KuCoin", async () => {
+    m.kucoin = 0.0003;
+    const { state } = await cycle(T0);
+    expect(state.xrd?.sources).toEqual(["coingecko", "mexc", "kucoin", "hUSDC@defiplaza"]);
+  });
+
+  it("outvotes an exchange quoting far off (Gate.io was 31% off)", async () => {
+    m.kucoin = 0.0003;
+    m.mexc = 0.000393;
+    const { state } = await cycle(T0);
+    expect(state.xrd?.value).toBeCloseTo(0.0003, 6);
+    expect(state.xrd?.sources).not.toContain("mexc");
+  });
+
+  it("ignores an order book with a wide spread", async () => {
+    await cycle(T0);
+    const f = marketFetch(m);
+    const wide: typeof fetch = async (input, init) => {
+      const u = String(input instanceof Request ? input.url : input);
+      if (u.includes("api.mexc.com")) return new Response(JSON.stringify({ bidPrice: "0.0002", askPrice: "0.0004" }));
+      return f(input, init);
+    };
+    m.now = T0 + 60;
+    const { state } = await runCycle(db, TOKENS, S, T0 + 60, wide);
+    expect(state.xrd?.sources).not.toContain("mexc");
+  });
+
+  it("works with CoinGecko alone being rate limited", async () => {
+    m.cg = "down";
+    m.kucoin = 0.0003;
+    const { state } = await cycle(T0);
+    expect(state.xrd?.sources).toEqual(["mexc", "kucoin", "hUSDC@defiplaza"]);
   });
 });

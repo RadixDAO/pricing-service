@@ -3,14 +3,14 @@ import { blendCoingecko, combinePools, jumpGate, pegCheck, type XrdCandidate, xr
 
 const S = { singleSourceMaxAgeSecs: 3600, singleSourceMaxMove: 0.1 };
 const cg = (v: number): XrdCandidate => ({ source: "coingecko", usdPerXrd: v, offchain: true, tol: 0.03 });
-const cp = (v: number): XrdCandidate => ({ source: "coinpaprika", usdPerXrd: v, offchain: true, tol: 0.03 });
+const cp = (v: number): XrdCandidate => ({ source: "mexc", usdPerXrd: v, offchain: true, tol: 0.03 });
 const chain = (v: number, name = "hUSDC@defiplaza"): XrdCandidate => ({ source: name, usdPerXrd: v, offchain: false, tol: 0.06 });
 const NOW = 1_800_000_000;
 
 describe("XRD/USD consensus", () => {
   it("uses all sources when they agree, including a thin pool a few percent off", () => {
     const r = xrdConsensus([cg(0.0003), cp(0.0003003), chain(0.000314)], undefined, NOW, S);
-    expect(r.ok && r.agreeing).toEqual(["coingecko", "coinpaprika", "hUSDC@defiplaza"]);
+    expect(r.ok && r.agreeing).toEqual(["coingecko", "mexc", "hUSDC@defiplaza"]);
     expect(r.ok && r.value).toBeCloseTo(0.0003003, 10);
   });
 

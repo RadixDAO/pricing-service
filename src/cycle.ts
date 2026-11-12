@@ -53,8 +53,8 @@ export async function runCycle(db: D1Database, cfg: TokensFile, s: Settings, now
     {
       coingeckoUrl: s.coingeckoUrl,
       coingeckoApiKey: s.coingeckoApiKey,
-      paprikaUrl: s.paprikaUrl,
-      paprikaXrdId: s.paprikaXrdId,
+      xrdSources: s.xrdSources,
+      maxBookSpread: s.maxBookSpread,
       maxQuoteAgeSecs: s.offchainMaxQuoteAgeSecs,
       timeoutMs: s.httpTimeoutMs,
     },
@@ -63,7 +63,7 @@ export async function runCycle(db: D1Database, cfg: TokensFile, s: Settings, now
   );
   for (const e of off.errors) log.push(`offchain: ${e}`);
   const cgXrd = xrdCgId ? off.coingecko.get(xrdCgId) : undefined;
-  const offXrd = [cgXrd, off.paprikaXrd].filter((x): x is number => x !== undefined);
+  const offXrd = [cgXrd, ...off.xrd.map((q) => q.usd)].filter((x): x is number => x !== undefined);
   // Rough XRD/USD for sizing and depth only; never published.
   const roughXrdUsd = offXrd.length ? median(offXrd) : st.xrd?.value;
 
@@ -179,7 +179,7 @@ export async function runCycle(db: D1Database, cfg: TokensFile, s: Settings, now
   // 4. XRD/USD: off-chain sources plus each healthy stablecoin pool as an on-chain witness.
   const cands: XrdCandidate[] = [];
   if (cgXrd !== undefined) cands.push({ source: "coingecko", usdPerXrd: cgXrd, offchain: true, tol: s.offchainAgreeTol });
-  if (off.paprikaXrd !== undefined) cands.push({ source: "coinpaprika", usdPerXrd: off.paprikaXrd, offchain: true, tol: s.offchainAgreeTol });
+  for (const q of off.xrd) cands.push({ source: q.source, usdPerXrd: q.usd, offchain: true, tol: s.offchainAgreeTol });
   const anchorPools: Array<{ sym: string; p: (typeof allPools)[number]; xrdPerAnchor: number }> = [];
   for (const a of cfg.usd_anchors) {
     for (const p of tokens[a].pools) {
@@ -219,12 +219,13 @@ export async function runCycle(db: D1Database, cfg: TokensFile, s: Settings, now
     if (cons.outliers.length) log.push(`XRD/USD outliers: ${cons.outliers.join(", ")}`);
   } else {
     issues.push(cons.reason);
-    alerts.set("xrd-usd", cons.reason);
+    const why = off.errors.length ? ` (${off.errors.join("; ")})` : "";
+    alerts.set("xrd-usd", cons.reason + why);
   }
-  for (const src of ["coingecko", "coinpaprika"]) {
-    const e = off.errors.find((x) => x.startsWith(src));
-    if (e) alerts.set(`source-${src}`, `${src} unavailable: ${e}`);
-  }
+  // Individual XRD sources failing is expected now and then; only CoinGecko, which the other
+  // tokens' cross-checks depend on, is alerted on its own.
+  const cgErr = off.errors.find((x) => x.startsWith("coingecko"));
+  if (cgErr) alerts.set("source-coingecko", `CoinGecko unavailable: ${cgErr}`);
 
   // 5. Publish.
   const prices = { ...st.prices };

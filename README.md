@@ -8,7 +8,7 @@ The pricing logic comes from [linuxx5046/radix-price-minimal](https://github.com
 
 A Cron Trigger runs a price cycle every minute:
 
-1. It fetches XRD/USD from CoinGecko and CoinPaprika, and every other token's CoinGecko price.
+1. It fetches XRD/USD from CoinGecko and from the MEXC and KuCoin order books, and every other token's CoinGecko price.
 2. It reads every pool in [tokens.json](tokens.json) from the Radix Gateway, in two batched transaction previews. It also reads each pool's balances to measure how deep the pool is.
 3. It fetches [Astrolescent](https://api.astrolescent.com/prices)'s aggregated prices as a backup (see below).
 4. It checks the prices, as described in the next section.
@@ -22,7 +22,7 @@ API requests only read the stored prices. Wallet traffic never reaches the Gatew
 
 The old service failed when a stablecoin lost its peg and when pools drained: it assumed every stablecoin was worth $1 and used any pool that answered. This service only publishes a price once it has been checked:
 
-- **XRD/USD needs two sources that agree, at least one of them off-chain.** The sources are CoinGecko, CoinPaprika, and the hUSDC pool on DefiPlaza treated as $1. On-chain pools alone can never set the XRD price, because on Radix they are cheap to move. Sources agree when they are within 5% of each other (6% for the on-chain pool). If only one off-chain source is reachable, or the two disagree and nothing breaks the tie, a source is accepted only when it is within 10% of a price validated in the last hour.
+- **XRD/USD needs two sources that agree, at least one of them off-chain.** The sources are CoinGecko, the MEXC and KuCoin order books (mid price, ignored if bid and ask are more than 5% apart), and the hUSDC pool on DefiPlaza treated as $1. Every source that answers gets a vote. As seen from Cloudflare, keyless CoinGecko and KuCoin are often rate limited and CoinPaprika's free tier is unusable, so several sources are needed; Gate.io is left out because its thin XRD market quoted 31% away from the others. On-chain pools alone can never set the XRD price, because on Radix they are cheap to move. Sources agree when they are within 5% of each other (6% for the on-chain pool). If only one off-chain source is reachable, or they disagree and nothing breaks the tie, a source is accepted only when it is within 10% of a price validated in the last hour.
 - **Stablecoins are never assumed to be $1.** Each stablecoin pool's price is checked against the validated XRD price. A stablecoin is shown at its real market price, and if it is more than 10% off its peg, an alert is raised.
 - **Pools must be deep enough.** A pool holding less than `MIN_POOL_DEPTH_USD` (default $100, adjustable per token with `min_depth_usd`) is not used. For DefiPlaza pools, a $10 test trade must also show a buy/sell spread under 25%. When a token has several pools, pools that disagree with the deepest one are dropped.
 - **CoinGecko and pools must agree.** If a token's CoinGecko price and its pool price differ by more than 10%, the price is withdrawn. For a bridged token, CoinGecko quotes the underlying coin and can't see a broken bridge. The exception is tokens marked `coingecko_only`, which use CoinGecko.

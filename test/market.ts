@@ -1,5 +1,5 @@
 /**
- * A simulated market: Radix Gateway, CoinGecko, CoinPaprika and GitHub, answering through an
+ * A simulated market: Radix Gateway, CoinGecko, MEXC, KuCoin, Astrolescent and GitHub, answering through an
  * injected fetch. Each test sets up a scenario and then breaks it in a specific way.
  */
 import { type TokensFile, XRD } from "../src/config";
@@ -70,7 +70,10 @@ export interface PlazaPool {
 
 export interface Market {
   cg: Record<string, number> | "down";
-  paprika: number | "down";
+  /** XRD/USD mid price on MEXC (order book +-0.5% around it), or down. */
+  mexc: number | "down";
+  /** KuCoin: like MEXC; rate limited (429) by default, as seen from Cloudflare. */
+  kucoin: number | "down";
   gateway: "up" | "down";
   oci: Record<string, OciPool | "fail">;
   plaza: Record<string, PlazaPool>;
@@ -90,7 +93,8 @@ export function healthyMarket(): Market {
   const xrdUsd = 0.0003;
   return {
     cg: { radix: xrdUsd, "usd-coin": 1, ethereum: 3000, binancecoin: 600 },
-    paprika: xrdUsd * 1.001,
+    mexc: xrdUsd * 1.001,
+    kucoin: "down",
     gateway: "up",
     oci: {
       [C.fooOci]: { raw: 100, xrd: 5_000_000 }, // 100 XRD per FOO, $3000 depth
@@ -130,9 +134,13 @@ export function marketFetch(m: Market): typeof fetch {
       const cg = m.cg;
       return ok(Object.fromEntries(ids.filter((i) => i in cg).map((i) => [i, { usd: cg[i], last_updated_at: now }])));
     }
-    if (url.host === "api.coinpaprika.com") {
-      if (m.paprika === "down") return new Response("down", { status: 503 });
-      return ok({ quotes: { USD: { price: m.paprika } }, last_updated: new Date(m.now * 1000).toISOString() });
+    if (url.host === "api.mexc.com") {
+      if (m.mexc === "down") return new Response("down", { status: 503 });
+      return ok({ symbol: "XRDUSDT", bidPrice: String(m.mexc * 0.995), askPrice: String(m.mexc * 1.005) });
+    }
+    if (url.host === "api.kucoin.com") {
+      if (m.kucoin === "down") return new Response(JSON.stringify({ code: "429000" }), { status: 429 });
+      return ok({ code: "200000", data: { time: m.now * 1000, bestBid: String(m.kucoin * 0.995), bestAsk: String(m.kucoin * 1.005) } });
     }
     if (url.host === "api.astrolescent.com") {
       if (m.astro === "down") return new Response("down", { status: 503 });

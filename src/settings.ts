@@ -5,8 +5,8 @@ export interface Env {
   GATEWAY_URL?: string;
   COINGECKO_URL?: string;
   COINGECKO_API_KEY?: string;
-  COINPAPRIKA_URL?: string;
-  COINPAPRIKA_XRD_ID?: string;
+  /** Comma-separated XRD/USD sources besides CoinGecko, e.g. "mexc,kucoin". */
+  XRD_SOURCES?: string;
   /** Enables /price/historicalPrice. */
   API_KEY?: string;
   /** Fine-grained token with Issues read/write on ALERT_REPO. Alerts are only logged without it. */
@@ -19,8 +19,10 @@ export interface Settings {
   gatewayUrl: string;
   coingeckoUrl: string;
   coingeckoApiKey?: string;
-  paprikaUrl: string;
-  paprikaXrdId: string;
+  /** XRD/USD sources besides CoinGecko (names from XRD_SOURCES in offchain.ts). */
+  xrdSources: string[];
+  /** Exchange order books wider than this (ask/bid - 1) are not used. */
+  maxBookSpread: number;
   /** Astrolescent aggregated prices: backup for pool reads when the Gateway is unavailable. "" disables. */
   astrolescentUrl: string;
   astrolescentMaxAgeSecs: number;
@@ -78,8 +80,8 @@ export function settings(env: Env): Settings {
     gatewayUrl: str("GATEWAY_URL", "https://mainnet.radixdlt.com"),
     coingeckoUrl: str("COINGECKO_URL", "https://api.coingecko.com/api/v3"),
     coingeckoApiKey: str("COINGECKO_API_KEY", "") || undefined,
-    paprikaUrl: str("COINPAPRIKA_URL", "https://api.coinpaprika.com/v1"),
-    paprikaXrdId: str("COINPAPRIKA_XRD_ID", "radix-dlt"),
+    xrdSources: str("XRD_SOURCES", "mexc,kucoin").split(",").map((x) => x.trim()).filter(Boolean),
+    maxBookSpread: num("MAX_BOOK_SPREAD", 0.05),
     astrolescentUrl: str("ASTROLESCENT_URL", "https://api.astrolescent.com/prices"),
     astrolescentMaxAgeSecs: num("ASTROLESCENT_MAX_AGE_SECS", 900),
     // A placeholder key would be an open door; treat it as unset.
@@ -92,7 +94,7 @@ export function settings(env: Env): Settings {
     historyEverySecs: num("HISTORY_EVERY_SECS", 300),
     retentionDays: num("RETENTION_DAYS", 400),
 
-    // CoinGecko and CoinPaprika were seen 3.8% apart on a quiet day (XRD trades thinly).
+    // Off-chain XRD quotes were seen 3.8% apart on a quiet day (XRD trades thinly).
     offchainAgreeTol: num("OFFCHAIN_AGREE_TOL", 0.05),
     onchainAgreeTol: num("ONCHAIN_AGREE_TOL", 0.06),
     singleSourceMaxAgeSecs: num("SINGLE_SOURCE_MAX_AGE_SECS", 3600),

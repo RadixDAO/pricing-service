@@ -21,13 +21,13 @@ const gw = makeGateway(GW);
 const [epoch, cg, cp] = await Promise.all([
   getEpoch(gw),
   fetch("https://api.coingecko.com/api/v3/simple/price?ids=radix&vs_currencies=usd").then((r) => r.json() as Promise<any>).catch(() => null),
-  fetch("https://api.coinpaprika.com/v1/tickers/radix-dlt").then((r) => r.json() as Promise<any>).catch(() => null),
+  fetch("https://api.mexc.com/api/v3/ticker/bookTicker?symbol=XRDUSDT").then((r) => r.json() as Promise<any>).catch(() => null),
 ]);
 const xrdCg: number | undefined = cg?.radix?.usd;
-const xrdCp: number | undefined = cp?.quotes?.USD?.price;
+const xrdCp: number | undefined = cp?.bidPrice ? Math.sqrt(Number(cp.bidPrice) * Number(cp.askPrice)) : undefined;
 const xrdUsd = xrdCg ?? xrdCp!;
 console.log(`gateway=${GW} epoch=${epoch}`);
-console.log(`XRD/USD  CoinGecko=${xrdCg}  CoinPaprika=${xrdCp}  probe=$${probeUsd} = ${(probeUsd / xrdUsd).toFixed(0)} XRD\n`);
+console.log(`XRD/USD  CoinGecko=${xrdCg}  MEXC=${xrdCp}  probe=$${probeUsd} = ${(probeUsd / xrdUsd).toFixed(0)} XRD\n`);
 
 const pools = Object.values(cfg.tokens).flatMap((t) => t.pools);
 const probeXrd = probeUsd / xrdUsd;

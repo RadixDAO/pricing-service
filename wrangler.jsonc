@@ -2,6 +2,8 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "radixdao-pricing-service",
   "main": "src/index.ts",
+  // Radix DAO Cloudflare account
+  "account_id": "cdb0453c60d48cf58f44f34f9eb6bbe2",
   "compatibility_date": "2026-11-01",
   "observability": { "enabled": true },
   "triggers": { "crons": ["* * * * *"] },
@@ -9,8 +11,7 @@
     {
       "binding": "DB",
       "database_name": "pricing-service",
-      // Set after `wrangler d1 create pricing-service` on the RAC Cloudflare account.
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "d27711b4-5259-4651-abe5-57145730be8f",
       "migrations_dir": "migrations"
     }
   ],
@@ -19,6 +20,7 @@
   "vars": {
     "ALERT_REPO": "RadixDAO/pricing-service"
   }
-  // Custom domain on the RadixDAO zone; enable once the zone is on this account.
+  // prices.radixdao.org is served by the "prices" Worker (Timan's port) for now; move it here
+  // only in agreement with Timan, after comparing both side by side.
   // "routes": [{ "pattern": "prices.radixdao.org", "custom_domain": true }]
 }
