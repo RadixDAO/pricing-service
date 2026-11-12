@@ -31,8 +31,8 @@ body:
     attributes:
       label: Pools
       description: |
-        One pool per line: `dex component base quote`, where base and quote are symbols (the new symbol, `XRD`, or an already listed token). Base and quote must match the pool's own order; the check tells you if they look swapped.
-      placeholder: ociswap component_rdx1… XRD HYDR
+        Paste each pool's **component address**, one per line. The DEX, the two tokens and their order are detected from the ledger. The other token must be XRD or an already listed token. (You can also write a line as `dex component base quote`.)
+      placeholder: component_rdx1…
       render: text
     validations:
       required: true

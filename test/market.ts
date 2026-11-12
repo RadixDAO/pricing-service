@@ -89,6 +89,8 @@ export interface Market {
   gatewayStatus: number;
   /** Resources the Gateway knows (for token-request checks). */
   resources: Record<string, { type?: string; symbol?: string }>;
+  /** Blueprint name per Ociswap component (default BasicPool). */
+  blueprints: Record<string, string>;
   /** unix seconds the simulated sources stamp their quotes with */
   now: number;
   calls: string[];
@@ -120,6 +122,7 @@ export function healthyMarket(): Market {
     },
     gatewayStatus: 502,
     resources: {},
+    blueprints: {},
     now: 1_800_000_000,
     calls: [],
     issues: [],
@@ -211,7 +214,9 @@ export function marketFetch(m: Market): typeof fetch {
             const res = m.resources[a];
             return {
               address: a,
-              details: res ? { type: res.type ?? "FungibleResource" } : { state: {} },
+              details: res
+                ? { type: res.type ?? "FungibleResource" }
+                : { state: {}, blueprint_name: m.plaza[a] ? "PlazaPair" : m.oci[a] ? (m.blueprints[a] ?? "BasicPool") : undefined },
               metadata: { items: res?.symbol ? [{ key: "symbol", value: { typed: { type: "String", value: res.symbol } } }] : [] },
               fungible_resources: { items: Object.entries(held).map(([r, v]) => ({ resource_address: r, amount: String(v) })) },
             };

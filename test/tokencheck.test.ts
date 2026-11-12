@@ -115,6 +115,44 @@ describe("add requests", () => {
   });
 });
 
+describe("pools given as just a component address", () => {
+  it("detects the DEX, tokens and order (XRD as base)", async () => {
+    m.blueprints[NEW_POOL] = "FlexPool";
+    const r = await checkAdd(addReq(NEW_POOL), TOKENS, d);
+    expect(r.ok).toBe(true);
+    expect(r.tokens?.tokens.HYDR.pools).toEqual([{ dex: "ociswap", component: NEW_POOL, base: "XRD", quote: "HYDR", blueprint_name: "FlexPool" }]);
+    expect(r.checks.find((c) => c.name === "Pool line 1")?.detail).toMatch(/Ociswap FlexPool, XRD \/ HYDR \(detected\)/);
+  });
+
+  it("detects the token as base when the pool quotes it that way", async () => {
+    m.oci[NEW_POOL] = { raw: 2, xrd: 2_000_000, holds: { [NEW]: 4_000_000 } }; // 2 HYDR per XRD
+    const r = await checkAdd(addReq(NEW_POOL), TOKENS, d);
+    expect(r.tokens?.tokens.HYDR.pools[0]).toMatchObject({ base: "HYDR", quote: "XRD" });
+  });
+
+  it("detects a DefiPlaza pair from get_tokens", async () => {
+    const r = await checkAdd({ ...addReq(C.husdcPlaza), symbol: "hUSDC2", resource_address: A.hUSDC }, TOKENS, d);
+    expect(r.checks.find((c) => c.name === "Resource address")?.detail).toMatch(/already listed as hUSDC/);
+  });
+
+  it("explains unsupported pool types", async () => {
+    m.blueprints[NEW_POOL] = "SomeOtherDex";
+    const r = await checkAdd(addReq(NEW_POOL), TOKENS, d);
+    expect(r.checks.find((c) => c.name === "Pool line 1")?.detail).toMatch(/unsupported pool type "SomeOtherDex"/);
+  });
+
+  it("says so when the pool does not hold the token", async () => {
+    const r = await checkAdd(addReq(C.fooOci), TOKENS, d);
+    expect(r.checks.find((c) => c.name === "Pool line 1")?.detail).toMatch(/does not hold HYDR/);
+  });
+
+  it("mixes detected and fully written lines", async () => {
+    const r = await checkAdd(addReq(`${NEW_POOL}
+ociswap ${NEW_POOL} XRD HYDR`), TOKENS, d);
+    expect(r.checks.find((c) => c.name === "Format")?.detail).toMatch(/same pool already listed/);
+  });
+});
+
 describe("remove requests", () => {
   it("removes a token nothing depends on", () => {
     const r = checkRemove({ kind: "remove", symbol: "BAR", reason: "x" }, TOKENS);

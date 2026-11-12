@@ -22,12 +22,15 @@ export const FIELDS = {
   reason: "Reason",
 } as const;
 
+/** A pool as requested: either fully specified, or just its component (details are detected). */
+export type PoolLine = PoolConfig | { component: string; dex?: undefined };
+
 export interface AddRequest {
   kind: "add";
   symbol: string;
   name?: string;
   resource_address: string;
-  pools: PoolConfig[];
+  pools: PoolLine[];
   coingecko_id?: string;
 }
 export interface RemoveRequest {
@@ -36,6 +39,8 @@ export interface RemoveRequest {
   reason: string;
 }
 export type TokenRequest = AddRequest | RemoveRequest;
+
+const MAX_POOLS = 10;
 
 /** Split an issue-form body into {label: value}. "_No response_" means empty. */
 export function formSections(body: string): Map<string, string> {
@@ -65,13 +70,18 @@ export function parseRequest(body: string, labels: string[]): TokenRequest | { e
   const resource = get(FIELDS.resource);
   if (!symbol) return { error: `missing "${FIELDS.symbol}"` };
   if (!resource) return { error: `missing "${FIELDS.resource}"` };
-  const pools: PoolConfig[] = [];
+  const pools: PoolLine[] = [];
   const lines = get(FIELDS.pools).split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+  if (lines.length > MAX_POOLS) return { error: `at most ${MAX_POOLS} pools per request` };
   for (const [i, line] of lines.entries()) {
     const w = line.split(/[\s,]+/).filter(Boolean);
-    if (w.length !== 4) return { error: `pool line ${i + 1} must be "dex component base quote", got: ${line.slice(0, 120)}` };
-    const [dex, component, base, quote] = w;
-    pools.push({ dex: dex.toLowerCase() as PoolConfig["dex"], component, base, quote });
+    if (w.length === 1) pools.push({ component: w[0] });
+    else if (w.length === 4) {
+      const [dex, component, base, quote] = w;
+      pools.push({ dex: dex.toLowerCase() as PoolConfig["dex"], component, base, quote });
+    } else {
+      return { error: `pool line ${i + 1} should be the pool's component address (or "dex component base quote"), got: ${line.slice(0, 120)}` };
+    }
   }
   if (pools.length === 0) return { error: `"${FIELDS.pools}" needs at least one pool` };
   const name = get(FIELDS.name) || undefined;
@@ -225,6 +235,98 @@ function judge(a: PoolAssessment, minDepth: number, s: Settings): string[] {
 const usd = (x: number) => (x >= 1 ? `$${x.toFixed(2)}` : `$${x.toPrecision(4)}`);
 const short = (c: string) => `${c.slice(0, 18)}…${c.slice(-6)}`;
 
+// ---------------------------------------------------------------- pool detection
+
+/** Pool blueprints we can price, by the DEX that publishes them. */
+export const BLUEPRINT_DEX: Record<string, PoolConfig["dex"]> = {
+  BasicPool: "ociswap",
+  PrecisionPool: "ociswap",
+  FlexPool: "ociswap",
+  PlazaPair: "defiplaza",
+};
+
+/**
+ * Fill in pools given only as a component address: the DEX from the component's blueprint, the
+ * two tokens from get_tokens (DefiPlaza) or the pool's reserves (Ociswap), and their order from
+ * the pool's price compared with its reserves (the order whose ratio matches the price).
+ */
+export async function completePools(req: AddRequest, cfg: TokensFile, d: Deps): Promise<{ pools: PoolConfig[]; checks: Check[] }> {
+  const checks: Check[] = [];
+  const pending = req.pools.filter((p): p is { component: string } => !p.dex).map((p) => p.component);
+  if (pending.length === 0) return { pools: req.pools as PoolConfig[], checks };
+
+  const symOf = new Map<string, string>([[XRD, "XRD"]]);
+  for (const [s, t] of Object.entries(cfg.tokens)) symOf.set(t.resource_address, s);
+  symOf.set(req.resource_address, req.symbol);
+  const label = (r: string) => symOf.get(r) ?? short(r);
+
+  const valid = pending.filter((c) => /^component_rdx1[0-9a-z]{54}$/.test(c));
+  const details = valid.length ? await d.gw.post("/state/entity/details", { addresses: valid, aggregation_level: "Global" }) : { items: [] };
+  const blueprintOf = new Map<string, string>(details.items.map((it: any) => [it.address, it.details?.blueprint_name]));
+  const hold = await holdings(d.gw, valid);
+  const epoch = await getEpoch(d.gw);
+  const calls = valid.map((c) => ({ component: c, method: BLUEPRINT_DEX[blueprintOf.get(c) ?? ""] === "defiplaza" ? "get_tokens" : "price_sqrt" }));
+  const results = await batchCalls(d.gw, epoch, calls);
+  const resultOf = new Map(valid.map((c, i) => [c, results[i]]));
+
+  const out: PoolConfig[] = [];
+  for (const [i, line] of req.pools.entries()) {
+    if (line.dex) {
+      out.push(line);
+      continue;
+    }
+    const c = line.component;
+    const name = `Pool line ${i + 1}`;
+    if (!valid.includes(c)) {
+      checks.push({ name, ok: false, detail: `not a mainnet component address: ${c.slice(0, 80)}` });
+      continue;
+    }
+    const blueprint = blueprintOf.get(c);
+    const dex = BLUEPRINT_DEX[blueprint ?? ""];
+    if (!dex) {
+      checks.push({ name, ok: false, detail: `unsupported pool type "${blueprint ?? "not found"}"; supported: Ociswap ${Object.keys(BLUEPRINT_DEX).filter((b) => BLUEPRINT_DEX[b] === "ociswap").join(", ")} and DefiPlaza PlazaPair` });
+      continue;
+    }
+    const res = resultOf.get(c)!;
+    if (!res.ok) {
+      checks.push({ name, ok: false, detail: `the pool did not answer: ${res.error}` });
+      continue;
+    }
+    let pair: [string, string];
+    if (dex === "defiplaza") {
+      pair = [res.value.fields?.[0]?.value, res.value.fields?.[1]?.value];
+    } else {
+      const amounts = new Map<string, number>();
+      const h = hold.get(c);
+      for (const a of [c, ...(h?.refs ?? [])]) for (const [r, v] of hold.get(a)?.amounts ?? []) if (v > 0) amounts.set(r, (amounts.get(r) ?? 0) + v);
+      if (!amounts.has(req.resource_address)) {
+        checks.push({ name, ok: false, detail: `the pool does not hold ${req.symbol}` });
+        continue;
+      }
+      const others = [...amounts.keys()].filter((r) => r !== req.resource_address && symOf.has(r));
+      if (others.length !== 1) {
+        checks.push({ name, ok: false, detail: others.length ? `the pool holds several listed tokens (${others.map(label).join(", ")}); write the line as "dex component base quote"` : `the pool's other token is not XRD or a listed token` });
+        continue;
+      }
+      const o = others[0];
+      const s = Number(res.value.fields ? res.value.fields[0].value : res.value.value);
+      const raw = s * s; // base per quote
+      const tok = amounts.get(req.resource_address)!;
+      const oth = amounts.get(o)!;
+      const fit = (ratio: number) => Math.abs(Math.log(raw / ratio));
+      pair = fit(oth / tok) <= fit(tok / oth) ? [o, req.resource_address] : [req.resource_address, o];
+    }
+    const [b, q] = pair.map((r) => symOf.get(r));
+    if (!b || !q) {
+      checks.push({ name, ok: false, detail: `the pool pairs ${pair.map(label).join(" / ")}; both must be XRD, ${req.symbol} or a listed token` });
+      continue;
+    }
+    out.push({ dex, component: c, base: b, quote: q, blueprint_name: blueprint });
+    checks.push({ name, ok: true, detail: `${dex === "ociswap" ? "Ociswap" : "DefiPlaza"} ${blueprint}, ${b} / ${q} (detected)` });
+  }
+  return { pools: out, checks };
+}
+
 // ---------------------------------------------------------------- add / remove
 
 export async function checkAdd(req: AddRequest, cfg: TokensFile, d: Deps): Promise<CheckResult> {
@@ -244,6 +346,19 @@ export async function checkAdd(req: AddRequest, cfg: TokensFile, d: Deps): Promi
     add("Symbol", true, existing ? `${req.symbol} is listed; its pools will be replaced` : `${req.symbol} is new`);
   }
   if (req.symbol === "XRD" || cfg.usd_anchors.includes(req.symbol)) add("Symbol", false, `${req.symbol} cannot be changed through a request`);
+  if (checks.some((c) => !c.ok)) return done(summary);
+
+  // Pools given only as a component address: detect DEX, tokens and their order.
+  let pools: PoolConfig[];
+  try {
+    const det = await completePools(req, cfg, d);
+    checks.push(...det.checks);
+    pools = det.pools;
+  } catch (e) {
+    add("Pools", false, `could not read the pools from the Gateway: ${errMsg(e)}. Edit the issue to retry.`);
+    return done(summary);
+  }
+  if (checks.some((c) => !c.ok)) return done(summary);
 
   const token: TokenConfig = {
     resource_address: req.resource_address,
@@ -252,9 +367,9 @@ export async function checkAdd(req: AddRequest, cfg: TokensFile, d: Deps): Promi
     ...(existing?.coingecko_weight !== undefined ? { coingecko_weight: existing.coingecko_weight } : {}),
     ...(existing?.min_depth_usd !== undefined ? { min_depth_usd: existing.min_depth_usd } : {}),
     // Keep details a maintainer added to pools that stay the same.
-    pools: req.pools.map((p) => {
+    pools: pools.map((p) => {
       const old = existing?.pools.find((o) => o.component === p.component && o.base === p.base && o.quote === p.quote);
-      return old?.blueprint_name ? { ...p, blueprint_name: old.blueprint_name } : p;
+      return old?.blueprint_name && !p.blueprint_name ? { ...p, blueprint_name: old.blueprint_name } : p;
     }),
   };
   const proposed: TokensFile = { ...cfg, tokens: { ...cfg.tokens, [req.symbol]: token } };
@@ -285,7 +400,7 @@ export async function checkAdd(req: AddRequest, cfg: TokensFile, d: Deps): Promi
   const minDepth = token.min_depth_usd ?? d.s.minPoolDepthUsd;
   let assessed: Map<string, PoolAssessment>;
   try {
-    assessed = await assessPools(req.pools, proposed, xrd.value, d);
+    assessed = await assessPools(token.pools, proposed, xrd.value, d);
   } catch (e) {
     add("Pools", false, `could not read pools from the Gateway: ${errMsg(e)}. Edit the issue to retry.`);
     return done(summary);

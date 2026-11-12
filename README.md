@@ -48,6 +48,7 @@ Anyone can ask through an issue: **[Add or update a token](../../issues/new?temp
 
 1. A workflow reads the request (never in a shell) and checks it against Radix mainnet with the same rules the service uses:
    - the address is a fungible resource, and its symbol is compared with the one requested
+   - pools can be given as just their component address: the DEX (from the pool's blueprint: Ociswap BasicPool, PrecisionPool or FlexPool, or DefiPlaza PlazaPair), the two tokens and their order are detected from the ledger
    - each pool answers, holds both tokens, and lists base and quote in the right order
    - each pool holds at least $100 (or the token's `min_depth_usd`), and a DefiPlaza pair's spread is acceptable
    - several pools agree within 10%, and a CoinGecko ID, if given, agrees within 10%
