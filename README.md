@@ -10,16 +10,19 @@ A Cron Trigger runs a price cycle every minute:
 
 1. It fetches XRD/USD from CoinGecko and CoinPaprika, and every other token's CoinGecko price.
 2. It reads every pool in [tokens.json](tokens.json) from the Radix Gateway, in two batched transaction previews. It also reads each pool's balances to measure how deep the pool is.
-3. It checks the prices, as described in the next section.
-4. It stores the result in D1.
+3. It fetches [Astrolescent](https://api.astrolescent.com/prices)'s aggregated prices as a backup (see below).
+4. It checks the prices, as described in the next section.
+5. It stores the result in D1.
 
-API requests only read the stored prices. Wallet traffic never reaches the Gateway, except for LSU lookups, which are cached for 5 minutes. A cycle makes about 5 Gateway calls, however many people are using the Wallet.
+API requests only read the stored prices. Wallet traffic never reaches the Gateway, except for LSU lookups, which are cached for 5 minutes. A cycle makes about 5 Gateway calls, however many people are using the Wallet. If the Gateway rejects a call (for example because of rate limiting), the cycle does not retry; it falls back to Astrolescent.
+
+**Astrolescent** is only used for its prices in XRD, which are converted to USD with our own validated XRD/USD. Its own USD prices are not used: in November 2026 they implied XRD/USD rates anywhere from $0.00016 to $0.00067, depending on the token. It backs up pool reads only while the Gateway is unreachable, and only for tokens whose pools passed our checks at the last good read. It is never used for XRD/USD or for the stablecoin reference. While the Gateway is up, any difference from our pools is logged. Entries older than 15 minutes are ignored, and only the entries we need are cut out of its ~880 KB response, to save CPU time.
 
 ## How prices are checked
 
 The old service failed when a stablecoin lost its peg and when pools drained: it assumed every stablecoin was worth $1 and used any pool that answered. This service only publishes a price once it has been checked:
 
-- **XRD/USD needs two sources that agree, at least one of them off-chain.** The sources are CoinGecko, CoinPaprika, and the hUSDC pool on DefiPlaza treated as $1. On-chain pools alone can never set the XRD price, because on Radix they are cheap to move. If only one off-chain source is reachable, its price is accepted only when it is within 10% of a price validated in the last hour.
+- **XRD/USD needs two sources that agree, at least one of them off-chain.** The sources are CoinGecko, CoinPaprika, and the hUSDC pool on DefiPlaza treated as $1. On-chain pools alone can never set the XRD price, because on Radix they are cheap to move. Sources agree when they are within 5% of each other (6% for the on-chain pool). If only one off-chain source is reachable, or the two disagree and nothing breaks the tie, a source is accepted only when it is within 10% of a price validated in the last hour.
 - **Stablecoins are never assumed to be $1.** Each stablecoin pool's price is checked against the validated XRD price. A stablecoin is shown at its real market price, and if it is more than 10% off its peg, an alert is raised.
 - **Pools must be deep enough.** A pool holding less than `MIN_POOL_DEPTH_USD` (default $100, adjustable per token with `min_depth_usd`) is not used. For DefiPlaza pools, a $10 test trade must also show a buy/sell spread under 25%. When a token has several pools, pools that disagree with the deepest one are dropped.
 - **CoinGecko and pools must agree.** If a token's CoinGecko price and its pool price differ by more than 10%, the price is withdrawn. For a bridged token, CoinGecko quotes the underlying coin and can't see a broken bridge. The exception is tokens marked `coingecko_only`, which use CoinGecko.

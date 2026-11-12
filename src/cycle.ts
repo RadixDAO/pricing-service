@@ -13,6 +13,7 @@ import {
 } from "./consensus";
 import { poolKey, readPools, type PoolReading } from "./dex";
 import { errMsg, type FetchFn, getEpoch, holdings, type EntityHoldings, makeGateway } from "./gateway";
+import { fetchAstrolescent } from "./astrolescent";
 import { fetchOffchain } from "./offchain";
 import type { Settings } from "./settings";
 import { loadState, pruneHistory, saveState, type ServiceState, writeHistory } from "./store";
@@ -39,6 +40,14 @@ export async function runCycle(db: D1Database, cfg: TokensFile, s: Settings, now
 
   // 1. Off-chain prices first: they size the pool probes and value pool depth.
   const cgIds = [...new Set(Object.values(tokens).flatMap((t) => (t.coingecko_id ? [t.coingecko_id] : [])))];
+  const astroP = fetchAstrolescent(
+    s.astrolescentUrl,
+    Object.values(tokens).map((t) => t.resource_address),
+    now,
+    s.astrolescentMaxAgeSecs,
+    s.httpTimeoutMs,
+    fetchFn,
+  );
   const off = await fetchOffchain(
     cgIds,
     {
@@ -62,6 +71,7 @@ export async function runCycle(db: D1Database, cfg: TokensFile, s: Settings, now
   const allPools = Object.values(tokens).flatMap((t) => t.pools);
   let readings = new Map<string, PoolReading>();
   let hold = new Map<string, EntityHoldings>();
+  let gatewayDown = false;
   try {
     const gw = makeGateway(s.gatewayUrl, fetchFn, s.httpTimeoutMs);
     const epoch = await getEpoch(gw);
@@ -76,10 +86,17 @@ export async function runCycle(db: D1Database, cfg: TokensFile, s: Settings, now
       holdings(gw, allPools.map((p) => p.component)),
     ]);
   } catch (e) {
+    gatewayDown = true;
     issues.push(`Radix Gateway unavailable: ${errMsg(e)}`);
     alerts.set("gateway", `Radix Gateway unavailable: ${errMsg(e)}`);
     log.push(`gateway: ${errMsg(e)}`);
   }
+
+  const astro = await astroP;
+  if (astro.error) log.push(astro.error);
+  const anchorSet = new Set(cfg.usd_anchors);
+  /** Symbols priced from Astrolescent instead of our own pool reads. */
+  const fromAstro = new Set<string>();
 
   // 3. Pool health and XRD price per token (healthy pools only).
   const health = new Map<string, PoolHealth>();
@@ -140,11 +157,24 @@ export async function runCycle(db: D1Database, cfg: TokensFile, s: Settings, now
     busy.delete(sym);
     const c = combinePools(vals, s.poolAgreeTol);
     if (c.dropped.length) log.push(`${sym}: dropped pools disagreeing with the deepest: ${c.dropped.join(", ")}`);
-    xrdPer.set(sym, c.value);
-    return c.value;
+    let value = c.value;
+    const a = astro.prices.get(t.resource_address);
+    if (value !== undefined && a && Math.abs(a.xrdPerToken / value - 1) > s.poolAgreeTol) {
+      log.push(`${sym}: Astrolescent differs ${(100 * (a.xrdPerToken / value - 1)).toFixed(1)}% from our pools`);
+    }
+    // Backup only while the Gateway is unreachable, and only for tokens whose pools passed our
+    // checks at the last good read: a pool we rejected as too thin is not made acceptable by
+    // reading it through an aggregator. Stablecoin references always come from our own reads.
+    if (value === undefined && gatewayDown && a && !anchorSet.has(sym) && st.pooled?.includes(sym)) {
+      value = a.xrdPerToken;
+      fromAstro.add(sym);
+    }
+    xrdPer.set(sym, value);
+    return value;
   }
 
   for (const sym of Object.keys(tokens)) resolve(sym);
+  if (!gatewayDown) st.pooled = Object.keys(tokens).filter((sym) => sym !== "XRD" && xrdPer.get(sym) !== undefined);
 
   // 4. XRD/USD: off-chain sources plus each healthy stablecoin pool as an on-chain witness.
   const cands: XrdCandidate[] = [];
@@ -213,21 +243,20 @@ export async function runCycle(db: D1Database, cfg: TokensFile, s: Settings, now
       }
     }
 
-    const anchors = new Set(cfg.usd_anchors);
     for (const [sym, t] of Object.entries(tokens)) {
       if (sym === "XRD") continue;
       const x = xrdPer.get(sym);
       const ledger = x !== undefined ? x * xrdUsd : undefined;
       // Stablecoins are shown at their market price on Radix, never assumed to be $1.
-      const cg = !anchors.has(sym) && t.coingecko_id ? off.coingecko.get(t.coingecko_id) : undefined;
-      const b = blendCoingecko(ledger, cg, t.coingecko_weight ?? s.coingeckoDefaultWeight, s.coingeckoMaxDivergence, !!t.coingecko_only && !anchors.has(sym));
+      const cg = !anchorSet.has(sym) && t.coingecko_id ? off.coingecko.get(t.coingecko_id) : undefined;
+      const b = blendCoingecko(ledger, cg, t.coingecko_weight ?? s.coingeckoDefaultWeight, s.coingeckoMaxDivergence, !!t.coingecko_only && !anchorSet.has(sym));
       if (!b) continue;
       if (b.divergence !== undefined) {
         const what = b.usd === undefined ? "price withdrawn" : "using CoinGecko";
         log.push(`${sym}: CoinGecko differs ${(b.divergence * 100).toFixed(1)}% from pools; ${what}`);
       }
       if (b.usd === undefined) continue;
-      prices[t.resource_address] = { usd: b.usd, at: now, src: b.source };
+      prices[t.resource_address] = { usd: b.usd, at: now, src: fromAstro.has(sym) ? `${b.source}:astrolescent` : b.source };
       updated.push([t.resource_address, b.usd]);
     }
     st.last_ok_at = now;

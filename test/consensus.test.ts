@@ -37,6 +37,15 @@ describe("XRD/USD consensus", () => {
     expect(r.ok).toBe(false);
   });
 
+  it("lets the last validated price break a tie when only one source is near it", () => {
+    const last = { value: 0.0003, at: NOW - 60 };
+    const r = xrdConsensus([cg(0.000305), cp(0.0004)], last, NOW, S);
+    expect(r.ok && r.mode).toBe("single_source");
+    expect(r.ok && r.value).toBe(0.000305);
+    // both near the last price but apart from each other: cannot tell, fail
+    expect(xrdConsensus([cg(0.00028), cp(0.00032)], last, NOW, S).ok).toBe(false);
+  });
+
   it("lets the on-chain pool break a tie between disagreeing off-chain sources", () => {
     const r = xrdConsensus([cg(0.0003), cp(0.0004), chain(0.000305)], undefined, NOW, S);
     expect(r.ok && r.agreeing.sort()).toEqual(["coingecko", "hUSDC@defiplaza"]);

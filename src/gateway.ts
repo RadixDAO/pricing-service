@@ -51,10 +51,13 @@ export async function preview(gw: Gateway, manifest: string, epoch: number): Pro
   });
   const rc = d.receipt;
   if (rc.status !== undefined && rc.status !== "Succeeded") {
-    throw new Error(`preview ${rc.status}: ${String(rc.error_message ?? "").slice(0, 160)}`);
+    throw new PreviewFailed(`preview ${rc.status}: ${String(rc.error_message ?? "").slice(0, 160)}`);
   }
   return rc.output.map((o: any) => o.programmatic_json);
 }
+
+/** The preview ran but a call in it failed (as opposed to the Gateway being unreachable). */
+export class PreviewFailed extends Error {}
 
 export interface Call {
   component: string;
@@ -70,14 +73,17 @@ export function callManifest(c: Call): string {
 /**
  * Run many read-only calls in as few previews as possible. A failing call fails its whole
  * preview, so on failure the batch is split in half until the failing calls are isolated.
+ * Gateway errors (unreachable, rate limited) are thrown instead: splitting would multiply
+ * the calls exactly when the Gateway is asking for fewer.
  */
 export async function batchCalls(gw: Gateway, epoch: number, calls: Call[]): Promise<Array<{ ok: true; value: any } | { ok: false; error: string }>> {
   if (calls.length === 0) return [];
   try {
     const out = await preview(gw, calls.map(callManifest).join("\n"), epoch);
-    if (out.length !== calls.length) throw new Error(`preview returned ${out.length} outputs for ${calls.length} calls`);
+    if (out.length !== calls.length) throw new PreviewFailed(`preview returned ${out.length} outputs for ${calls.length} calls`);
     return out.map((value) => ({ ok: true as const, value }));
   } catch (e) {
+    if (!(e instanceof PreviewFailed)) throw e;
     if (calls.length === 1) return [{ ok: false, error: errMsg(e) }];
     const mid = Math.ceil(calls.length / 2);
     const [a, b] = await Promise.all([batchCalls(gw, epoch, calls.slice(0, mid)), batchCalls(gw, epoch, calls.slice(mid))]);

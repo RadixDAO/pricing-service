@@ -78,6 +78,21 @@ export function xrdConsensus(cands: XrdCandidate[], last: LastGood | undefined, 
   if (off.length === 0) {
     return { ok: false, reason: "no off-chain XRD/USD source available; on-chain pools alone are not trusted", outliers: [] };
   }
+
+  // Off-chain sources disagree and nothing breaks the tie: the last validated price may,
+  // when exactly one of them is close to it.
+  if (last && now - last.at <= s.singleSourceMaxAgeSecs) {
+    const near = off.filter((c) => rel(c.usdPerXrd, last.value) <= s.singleSourceMaxMove);
+    if (near.length === 1) {
+      return {
+        ok: true,
+        value: near[0].usdPerXrd,
+        mode: "single_source",
+        agreeing: [near[0].source],
+        outliers: valid.filter((c) => c !== near[0]).map((c) => c.source),
+      };
+    }
+  }
   const desc = valid.map((c) => `${c.source}=${c.usdPerXrd.toPrecision(6)}`).join(", ");
   return { ok: false, reason: `XRD/USD sources disagree: ${desc}`, outliers: valid.map((c) => c.source) };
 }

@@ -21,6 +21,9 @@ export interface Settings {
   coingeckoApiKey?: string;
   paprikaUrl: string;
   paprikaXrdId: string;
+  /** Astrolescent aggregated prices: backup for pool reads when the Gateway is unavailable. "" disables. */
+  astrolescentUrl: string;
+  astrolescentMaxAgeSecs: number;
   apiKey?: string;
   githubToken?: string;
   alertRepo: string;
@@ -77,6 +80,8 @@ export function settings(env: Env): Settings {
     coingeckoApiKey: str("COINGECKO_API_KEY", "") || undefined,
     paprikaUrl: str("COINPAPRIKA_URL", "https://api.coinpaprika.com/v1"),
     paprikaXrdId: str("COINPAPRIKA_XRD_ID", "radix-dlt"),
+    astrolescentUrl: str("ASTROLESCENT_URL", "https://api.astrolescent.com/prices"),
+    astrolescentMaxAgeSecs: num("ASTROLESCENT_MAX_AGE_SECS", 900),
     // A placeholder key would be an open door; treat it as unset.
     apiKey: apiKey && apiKey !== "change-me" && apiKey.length >= 16 ? apiKey : undefined,
     githubToken: str("GITHUB_ALERT_TOKEN", "") || undefined,
@@ -87,7 +92,8 @@ export function settings(env: Env): Settings {
     historyEverySecs: num("HISTORY_EVERY_SECS", 300),
     retentionDays: num("RETENTION_DAYS", 400),
 
-    offchainAgreeTol: num("OFFCHAIN_AGREE_TOL", 0.03),
+    // CoinGecko and CoinPaprika were seen 3.8% apart on a quiet day (XRD trades thinly).
+    offchainAgreeTol: num("OFFCHAIN_AGREE_TOL", 0.05),
     onchainAgreeTol: num("ONCHAIN_AGREE_TOL", 0.06),
     singleSourceMaxAgeSecs: num("SINGLE_SOURCE_MAX_AGE_SECS", 3600),
     singleSourceMaxMove: num("SINGLE_SOURCE_MAX_MOVE", 0.1),

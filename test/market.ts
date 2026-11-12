@@ -75,6 +75,10 @@ export interface Market {
   oci: Record<string, OciPool | "fail">;
   plaza: Record<string, PlazaPool>;
   lsuRedemption: number;
+  /** Astrolescent entries: XRD per token, updated-at (unix s), and a deliberately bogus USD price. */
+  astro: Record<string, { xrd: number; updatedAt?: number }> | "down";
+  /** HTTP status the Gateway answers with when "down". */
+  gatewayStatus: number;
   /** unix seconds the simulated sources stamp their quotes with */
   now: number;
   calls: string[];
@@ -97,6 +101,13 @@ export function healthyMarket(): Market {
     },
     plaza: { [C.husdcPlaza]: { p0: 1 / xrdUsd, spread: 0.01, xrd: 4_000_000 } },
     lsuRedemption: 1.1,
+    astro: {
+      [A.FOO]: { xrd: 99 },
+      [A.BAR]: { xrd: 0.02 },
+      [A.hETH]: { xrd: 3000 / xrdUsd },
+      [A.hUSDC]: { xrd: 0.5 / xrdUsd },
+    },
+    gatewayStatus: 502,
     now: 1_800_000_000,
     calls: [],
     issues: [],
@@ -123,12 +134,29 @@ export function marketFetch(m: Market): typeof fetch {
       if (m.paprika === "down") return new Response("down", { status: 503 });
       return ok({ quotes: { USD: { price: m.paprika } }, last_updated: new Date(m.now * 1000).toISOString() });
     }
+    if (url.host === "api.astrolescent.com") {
+      if (m.astro === "down") return new Response("down", { status: 503 });
+      // Real responses carry ~880 entries with free-text descriptions; include awkward ones.
+      const entries: Record<string, unknown> = {
+        [addr("resource", "decoy")]: { description: 'has } and { and \\" and "quotes"', tokenPriceXRD: 1, tokenPriceUSD: 1, updatedAt: new Date(m.now * 1000).toISOString() },
+      };
+      for (const [a, e] of Object.entries(m.astro)) {
+        entries[a] = {
+          address: a,
+          description: "Token {with} braces",
+          tokenPriceXRD: e.xrd,
+          tokenPriceUSD: e.xrd * 0.0006, // Astrolescent's own USD: wrong on purpose, must be ignored
+          updatedAt: new Date((e.updatedAt ?? m.now - 60) * 1000).toISOString(),
+        };
+      }
+      return new Response(JSON.stringify(entries, null, 1), { status: 200 });
+    }
     if (url.host === "api.github.com") {
       m.issues.push({ method: init?.method ?? "GET", path: url.pathname, body });
       return ok({ number: 7 });
     }
     if (url.host !== "gateway.test") return new Response("unexpected host", { status: 500 });
-    if (m.gateway === "down") return new Response("bad gateway", { status: 502 });
+    if (m.gateway === "down") return new Response("unavailable", { status: m.gatewayStatus });
 
     if (url.pathname === "/status/gateway-status") return ok({ ledger_state: { epoch: 1000 } });
     if (url.pathname === "/transaction/preview") {

@@ -20,6 +20,8 @@ export interface ServiceState {
   xrd_pending?: LastGood;
   /** resource address -> latest validated price */
   prices: Record<string, PriceEntry>;
+  /** Symbols that had a healthy pool at the last successful Gateway read (Astrolescent may back these up). */
+  pooled?: string[];
   last_history_at?: number;
   last_prune_at?: number;
 }

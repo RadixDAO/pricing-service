@@ -139,9 +139,10 @@ describe("source outages", () => {
     expect(((await h.json()) as any).Everything).toBe("Stale");
   });
 
-  it("keeps XRD alive through a Gateway outage; pool prices age out", async () => {
+  it("keeps XRD alive through a Gateway outage; without a backup, pool prices age out", async () => {
     await cycle(T0);
     m.gateway = "down";
+    m.astro = "down";
     const { state } = await cycle(T0 + 600);
     expect(state.xrd?.at).toBe(T0 + 600);
     const p = await priced(T0 + 960);
@@ -239,5 +240,68 @@ describe("API", () => {
   it("state survives in D1 between cycles", async () => {
     await cycle(T0);
     expect((await loadState(db)).prices[XRD].usd).toBeCloseTo(0.0003, 6);
+  });
+});
+
+describe("Astrolescent", () => {
+  /** A healthy cycle, then the Gateway goes away. */
+  async function outage() {
+    await cycle(T0 - 600);
+    m.gateway = "down";
+  }
+
+  it("prices tokens from Astrolescent's XRD prices while the Gateway is down, using our XRD/USD", async () => {
+    await outage();
+    const { state } = await cycle(T0);
+    const p = await priced(T0);
+    expect(p[XRD]).toBeCloseTo(0.0003, 6);
+    expect(p[A.FOO]).toBeCloseTo(99 * p[XRD], 9); // its own USD price (2x off) is ignored
+    expect(p[A.BAR]).toBeCloseTo(0.02 * p[XRD], 12);
+    expect(state.prices[A.FOO].src).toBe("ledger_only:astrolescent");
+    expect(state.prices[A.hUSDC].at).toBe(T0 - 600); // stablecoins only from our own reads
+  });
+
+  it("does not back up a token whose pools were rejected at the last good read", async () => {
+    m.oci[C.barOci] = { raw: 50, xrd: 10_000 }; // $6 deep
+    await outage();
+    await cycle(T0);
+    expect((await priced(T0))[A.BAR]).toBeUndefined();
+  });
+
+  it("still cross-checks Astrolescent-based prices against CoinGecko", async () => {
+    await outage();
+    (m.astro as any)[A.hETH] = { xrd: 1000 / 0.0003 }; // says $1000, CoinGecko says $3000
+    const { state } = await cycle(T0);
+    expect(state.prices[A.hETH].at).toBe(T0 - 600); // not updated from the bad value
+  });
+
+  it("ignores stale Astrolescent entries", async () => {
+    await outage();
+    (m.astro as any)[A.FOO] = { xrd: 99, updatedAt: T0 - 3600 };
+    const { state } = await cycle(T0);
+    expect(state.prices[A.FOO].at).toBe(T0 - 600);
+  });
+
+  it("is not used while the Gateway is up (our pools win)", async () => {
+    const { state } = await cycle(T0);
+    expect(state.prices[A.FOO].src).toBe("ledger_only");
+    expect((await priced(T0))[A.FOO]).toBeCloseTo(100.5 * 0.0003, 4);
+  });
+
+  it("an Astrolescent outage changes nothing", async () => {
+    m.astro = "down";
+    const { state } = await cycle(T0);
+    expect(state.status).toBe("ok");
+  });
+});
+
+describe("Gateway rate limiting", () => {
+  it("does not retry harder when the Gateway rejects calls", async () => {
+    await cycle(T0);
+    m.gateway = "down";
+    m.gatewayStatus = 429;
+    m.calls = [];
+    await cycle(T0 + 60);
+    expect(m.calls.filter((c) => c.startsWith("gateway.test")).length).toBeLessThanOrEqual(1);
   });
 });
