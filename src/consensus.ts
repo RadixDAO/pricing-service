@@ -185,6 +185,8 @@ export function blendCoingecko(
     if (coingeckoOnly) return { usd: cgUsd, source: "coingecko_pool_diverged", divergence: d };
     return { source: "withdrawn_diverged", divergence: d };
   }
+  // A coingecko_only token's pool is not trusted on its own (hBNB's pool says $254 for BNB).
+  if (ledgerUsd !== undefined && coingeckoOnly) return undefined;
   if (ledgerUsd !== undefined) return { usd: ledgerUsd, source: "ledger_only" };
   if (cgUsd !== undefined && coingeckoOnly) return { usd: cgUsd, source: "coingecko_only" };
   return undefined;

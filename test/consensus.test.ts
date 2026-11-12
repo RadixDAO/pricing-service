@@ -138,6 +138,9 @@ describe("CoinGecko blend", () => {
     expect(blendCoingecko(100, 250, 0.8, 0.1, true)).toMatchObject({ usd: 250, source: "coingecko_pool_diverged" });
     expect(blendCoingecko(undefined, 250, 0.8, 0.1, true)).toMatchObject({ usd: 250, source: "coingecko_only" });
   });
+  it("never falls back to the pool alone for a coingecko_only token", () => {
+    expect(blendCoingecko(254, undefined, 0.8, 0.1, true)).toBeUndefined();
+  });
   it("never uses CoinGecko alone otherwise", () => {
     expect(blendCoingecko(undefined, 250, 0.8, 0.1, false)).toBeUndefined();
   });

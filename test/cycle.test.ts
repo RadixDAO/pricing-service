@@ -117,6 +117,14 @@ describe("drained pools", () => {
     expect((await priced(T0))[A.hETH]).toBeUndefined();
   });
 
+  it("does not publish a coingecko_only token's pool price while CoinGecko is down", async () => {
+    m.oci[C.hbnbOci] = { raw: 250 / 0.0003, xrd: 1_000_000 };
+    m.cg = "down";
+    m.kucoin = 0.0003;
+    await cycle(T0);
+    expect((await priced(T0))[A.hBNB]).toBeUndefined();
+  });
+
   it("uses CoinGecko for a coingecko_only token when its pool disagrees", async () => {
     m.oci[C.hbnbOci] = { raw: 250 / 0.0003, xrd: 1_000_000 };
     await cycle(T0);
