@@ -60,12 +60,17 @@ export interface OciPool {
   raw: number;
   /** XRD held by the pool */
   xrd: number;
+  /** Other resources held by the pool (resource -> amount). */
+  holds?: Record<string, number>;
 }
 export interface PlazaPool {
   /** quote per base */
   p0: number;
   spread: number;
   xrd: number;
+  holds?: Record<string, number>;
+  /** (base, quote) resource addresses returned by get_tokens */
+  tokens?: [string, string];
 }
 
 export interface Market {
@@ -82,6 +87,8 @@ export interface Market {
   astro: Record<string, { xrd: number; updatedAt?: number }> | "down";
   /** HTTP status the Gateway answers with when "down". */
   gatewayStatus: number;
+  /** Resources the Gateway knows (for token-request checks). */
+  resources: Record<string, { type?: string; symbol?: string }>;
   /** unix seconds the simulated sources stamp their quotes with */
   now: number;
   calls: string[];
@@ -112,6 +119,7 @@ export function healthyMarket(): Market {
       [A.hUSDC]: { xrd: 0.5 / xrdUsd },
     },
     gatewayStatus: 502,
+    resources: {},
     now: 1_800_000_000,
     calls: [],
     issues: [],
@@ -172,6 +180,11 @@ export function marketFetch(m: Market): typeof fetch {
       for (const [, comp, method, args] of String(body.manifest).matchAll(/Address\("([^"]+)"\)\n"([^"]+)"\n?(.*?);/gs)) {
         const plaza = m.plaza[comp];
         if (plaza) {
+          if (method === "get_tokens") {
+            const [b, q] = plaza.tokens ?? ["?", "?"];
+            outs.push({ programmatic_json: { kind: "Tuple", fields: [{ kind: "Reference", value: b }, { kind: "Reference", value: q }] } });
+            continue;
+          }
           if (method === "get_state") {
             outs.push({ programmatic_json: { kind: "Tuple", fields: [{ ...dec(plaza.p0), field_name: "p0" }] } });
             continue;
@@ -194,8 +207,14 @@ export function marketFetch(m: Market): typeof fetch {
         return ok({
           items: body.addresses.map((a: string) => {
             const p = m.oci[a] ?? m.plaza[a];
-            const xrd = p && p !== "fail" ? p.xrd : 0;
-            return { address: a, details: { state: {} }, fungible_resources: { items: [{ resource_address: XRD, amount: String(xrd) }] } };
+            const held: Record<string, number> = p && p !== "fail" ? { [XRD]: p.xrd, ...(p.holds ?? {}) } : {};
+            const res = m.resources[a];
+            return {
+              address: a,
+              details: res ? { type: res.type ?? "FungibleResource" } : { state: {} },
+              metadata: { items: res?.symbol ? [{ key: "symbol", value: { typed: { type: "String", value: res.symbol } } }] : [] },
+              fungible_resources: { items: Object.entries(held).map(([r, v]) => ({ resource_address: r, amount: String(v) })) },
+            };
           }),
         });
       }
@@ -223,4 +242,21 @@ export function marketFetch(m: Market): typeof fetch {
     }
     return new Response("not found", { status: 404 });
   };
+}
+
+/** Fill in pool reserves consistent with the healthy market's prices (for token-request checks). */
+export function withReserves(m: Market): Market {
+  const r = (xrd: number, xrdPerToken: number) => xrd / xrdPerToken;
+  const set = (c: string, res: string, amt: number) => {
+    const p = m.oci[c];
+    if (p && p !== "fail") p.holds = { ...(p.holds ?? {}), [res]: amt };
+  };
+  set(C.fooOci, A.FOO, r(5_000_000, 100));
+  set(C.fooOci2, A.FOO, r(2_000_000, 101));
+  set(C.barOci, A.BAR, r(2_000_000, 0.02));
+  set(C.hethOci, A.hETH, r(50_000_000, 3000 / 0.0003));
+  set(C.hbnbOci, A.hBNB, r(1_000_000, 600 / 0.0003));
+  m.plaza[C.husdcPlaza].holds = { [A.hUSDC]: r(4_000_000, 1 / 0.0003) };
+  m.plaza[C.husdcPlaza].tokens = [A.hUSDC, XRD];
+  return m;
 }

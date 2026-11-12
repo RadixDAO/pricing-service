@@ -1,0 +1,21 @@
+name: Remove a token
+description: Ask for a listed token to stop being priced.
+title: "Remove token: "
+labels: [token-request, remove-token]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        An automated check confirms the token is listed and that nothing else is priced through it, then opens a pull request for a RadixDAO maintainer to review and merge.
+  - type: input
+    attributes:
+      label: Symbol
+      description: The symbol as listed in tokens.json.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Reason
+      description: For example "pool drained", "token discontinued", or a link to a recheck issue.
+    validations:
+      required: true

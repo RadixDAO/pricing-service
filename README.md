@@ -44,21 +44,23 @@ All thresholds are in [src/settings.ts](src/settings.ts) and can be overridden w
 
 ## Adding or removing a token
 
-Edit [tokens.json](tokens.json) in a pull request. CI checks that the file is valid. A maintainer reviews and merges it, and the merge redeploys the service.
+Anyone can ask through an issue: **[Add or update a token](../../issues/new?template=add-token.yml)** or **[Remove a token](../../issues/new?template=remove-token.yml)**.
 
-```jsonc
-"SYMBOL": {
-  "resource_address": "resource_rdx1…",
-  "coingecko_id": "optional-coingecko-id",
-  "pools": [
-    { "dex": "ociswap", "component": "component_rdx1…", "base": "XRD", "quote": "SYMBOL" }
-  ]
-}
-```
+1. A workflow reads the request (never in a shell) and checks it against Radix mainnet with the same rules the service uses:
+   - the address is a fungible resource, and its symbol is compared with the one requested
+   - each pool answers, holds both tokens, and lists base and quote in the right order
+   - each pool holds at least $100 (or the token's `min_depth_usd`), and a DefiPlaza pair's spread is acceptable
+   - several pools agree within 10%, and a CoinGecko ID, if given, agrees within 10%
+   - removals: the token is listed, and it isn't XRD, a USD reference, or the quote token for another token's pool
+2. The result is posted on the issue. A failing request gets the `needs-changes` label; editing the issue runs the checks again.
+3. A passing request gets a pull request that changes `tokens.json`. The workflow runs the full test suite against the new file first. Changing an existing token's pools uses the add form with the same symbol.
+4. **A repository admin reviews and merges the PR.** Merging deploys the change. The merge is the approval step, because thin pools can be manipulated to push false prices into the Wallet.
 
-- Supported DEXes are `ociswap` and `defiplaza`. C9 has shut down.
-- In each pool, one side must be the token itself. A pool without XRD must have the token as its `base`. It is then priced through its `quote` token.
-- Before proposing a pool, run `npm run probe` to see each pool's price, depth and spread on mainnet.
+Every Monday the **weekly recheck** re-reads all listed pools and opens a `token-recheck` issue for each token with problems: no usable pool (the token is shown without a price), or some pools failing.
+
+Requests can't change XRD or the USD references (`usd_anchors`), set `coingecko_only` or `min_depth_usd`, or use DEXes other than Ociswap and DefiPlaza. Those changes go through a normal pull request.
+
+To check pools by hand: `npm run probe` measures every pool in `tokens.json` against mainnet.
 
 ## Development
 

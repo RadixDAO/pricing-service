@@ -1,0 +1,29 @@
+name: Weekly token recheck
+
+# Re-checks every listed pool against Radix mainnet and opens an issue (label token-recheck) for
+# each token with problems, unless one is already open.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  recheck:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx tsx scripts/token-request.ts recheck
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}

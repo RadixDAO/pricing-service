@@ -1,0 +1,85 @@
+name: Token request
+
+# Checks "Add token" / "Remove token" issues against Radix mainnet and, when they pass, opens a
+# pull request for a maintainer to merge. Issue text is untrusted: it is read only by
+# scripts/token-request.ts from the event file, never interpolated into a shell command.
+
+on:
+  issues:
+    types: [opened, edited, reopened, labeled]
+
+permissions: {}
+
+jobs:
+  check:
+    if: github.event.issue.state == 'open' && contains(github.event.issue.labels.*.name, 'token-request')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    concurrency:
+      group: token-request-${{ github.event.issue.number }}
+      cancel-in-progress: true
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NUMBER: ${{ github.event.issue.number }}
+      BRANCH: token-request/${{ github.event.issue.number }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Check the request
+        run: npx tsx scripts/token-request.ts check "$GITHUB_EVENT_PATH" "$RUNNER_TEMP/out"
+        env:
+          COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
+
+      - name: Read result
+        id: result
+        run: echo "ok=$(jq -r .ok "$RUNNER_TEMP/out/result.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Run the tests against the proposed tokens.json
+        if: steps.result.outputs.ok == 'true'
+        run: |
+          cp "$RUNNER_TEMP/out/tokens.json" tokens.json
+          npm run typecheck
+          npm test
+
+      - name: Open or update the pull request
+        if: steps.result.outputs.ok == 'true'
+        run: |
+          title="$(jq -r .title "$RUNNER_TEMP/out/result.json")"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$BRANCH"
+          git add tokens.json
+          git commit -m "$title"
+          git push --force origin "$BRANCH"
+          pr="$(gh pr list --head "$BRANCH" --state open --json number -q '.[0].number')"
+          if [ -n "$pr" ]; then
+            gh pr edit "$pr" --title "$title" --body-file "$RUNNER_TEMP/out/pr-body.md"
+          else
+            gh pr create --base main --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/out/pr-body.md" --label token-request
+          fi
+          gh issue edit "$NUMBER" --remove-label needs-changes || true
+
+      - name: Close an earlier pull request that no longer passes
+        if: steps.result.outputs.ok != 'true'
+        run: |
+          pr="$(gh pr list --head "$BRANCH" --state open --json number -q '.[0].number')"
+          if [ -n "$pr" ]; then
+            gh pr close "$pr" --delete-branch --comment "Closed: the request in #$NUMBER no longer passes its checks."
+          fi
+          gh issue edit "$NUMBER" --add-label needs-changes || true
+
+      - name: Post the result on the issue
+        if: always() && steps.result.outcome == 'success'
+        run: |
+          gh issue comment "$NUMBER" --edit-last --body-file "$RUNNER_TEMP/out/comment.md" 2>/dev/null \
+            || gh issue comment "$NUMBER" --body-file "$RUNNER_TEMP/out/comment.md"

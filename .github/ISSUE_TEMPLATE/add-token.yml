@@ -1,0 +1,43 @@
+name: Add or update a token
+description: Ask for a token to be priced in the Radix Wallet, or change the pools of a listed token.
+title: "Add token: "
+labels: [token-request, add-token]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        After you submit, an automated check reads the token and its pools from Radix mainnet and posts the result here. If everything passes, it opens a pull request; a RadixDAO maintainer reviews and merges it, and the merge puts the token live.
+
+        A pool is only used when it holds at least **$100** of liquidity (both sides together). Supported DEXes: **ociswap** and **defiplaza**.
+  - type: input
+    attributes:
+      label: Symbol
+      description: Short symbol, used as the token's name in the list (letters, digits, `.`, `_`, `-`). To change the pools of a listed token, use its existing symbol.
+      placeholder: HYDR
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Name
+      description: Optional display name.
+      placeholder: Hydrate
+  - type: input
+    attributes:
+      label: Resource address
+      placeholder: resource_rdx1…
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Pools
+      description: |
+        One pool per line: `dex component base quote`, where base and quote are symbols (the new symbol, `XRD`, or an already listed token). Base and quote must match the pool's own order; the check tells you if they look swapped.
+      placeholder: ociswap component_rdx1… XRD HYDR
+      render: text
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: CoinGecko ID
+      description: Optional. The ID from the token's CoinGecko page URL. Its price must agree with the pools within 10%.
+      placeholder: hydrate
