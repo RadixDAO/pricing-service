@@ -178,7 +178,9 @@ class Resolver:
         self.pools, self.syms, self._busy = {}, {}, set()
 
     def pool(self, p):
-        k = p["component"]
+        # The same component can be listed under two tokens with base/quote swapped;
+        # keying on the component alone would hand the second token the first one's price.
+        k = (p["component"], p["base"], p["quote"])
         if k in self.pools:
             return self.pools[k]
         try:
@@ -523,17 +525,37 @@ def make_handler(store, pricer, cfg):
         def _send(self, code, obj):
             b = json.dumps(obj, separators=(",", ":")).encode()
             self.send_response(code)
+            if self.close_connection:
+                self.send_header("Connection", "close")
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(b)))
             self.end_headers()
             self.wfile.write(b)
 
-        def _body(self):
-            n = int(self.headers.get("Content-Length") or 0)
-            if n > 256 * 1024:
-                raise ApiError(413, "body too large")
+        def _read_body(self):
+            """Read the whole request body up front, so nothing is left on the connection.
+
+            On a bad or oversized Content-Length the body cannot be skipped safely, so the
+            connection is closed after the error response.
+            """
+            if self.headers.get("Transfer-Encoding"):
+                self.close_connection = True
+                raise ApiError(411, "Content-Length required")
             try:
-                d = json.loads(self.rfile.read(n) or b"null")
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = -1
+            if n < 0:
+                self.close_connection = True
+                raise ApiError(400, "invalid Content-Length")
+            if n > 256 * 1024:
+                self.close_connection = True
+                raise ApiError(413, "body too large")
+            self._raw = self.rfile.read(n) if n else b""
+
+        def _body(self):
+            try:
+                d = json.loads(self._raw or b"null")
             except ValueError:
                 raise ApiError(422, "invalid JSON")
             if not isinstance(d, dict):
@@ -555,6 +577,7 @@ def make_handler(store, pricer, cfg):
         def do_POST(self):
             path = self.path.split("?")[0].rstrip("/")
             try:
+                self._read_body()
                 if path in ("/price/tokens", "/price/tokens-legacy"):
                     return self._send(200, self.prices(self._body()))
                 if path in ("/price/historicalPrice", "/price/historicalPrice-legacy"):

@@ -230,6 +230,42 @@ class MinpriceTest(unittest.TestCase):
         self.assertEqual(p.resolve_cg("X", "radix", {"radix": 1.0}, 0.02, time.time()),
                          (0.021, "coingecko_cached"))
 
+    def raw(self, data):
+        """Send raw bytes on one connection and return everything the server answers."""
+        import socket
+        host, port = self.srv.server_address
+        with socket.create_connection((host, port), timeout=5) as s:
+            s.sendall(data)
+            s.shutdown(socket.SHUT_WR)
+            chunks = []
+            while True:
+                c = s.recv(65536)
+                if not c:
+                    break
+                chunks.append(c)
+        return b"".join(chunks)
+
+    def test_negative_content_length_rejected(self):
+        body = b"x" * (512 * 1024)
+        out = self.raw(b"POST /price/tokens HTTP/1.1\r\nHost: t\r\nContent-Length: -1\r\n\r\n" + body)
+        self.assertTrue(out.startswith(b"HTTP/1.1 400"), out[:80])
+        self.assertEqual(out.count(b"HTTP/1.1 "), 1)
+
+    def test_unread_body_not_parsed_as_second_request(self):
+        smuggled = b"GET /healthz HTTP/1.1\r\nHost: t\r\n\r\n"
+        for path, headers in ((b"/nope", b""), (b"/price/historicalPrice", b"")):
+            req = (b"POST " + path + b" HTTP/1.1\r\nHost: t\r\n" + headers +
+                   b"Content-Length: " + str(len(smuggled)).encode() + b"\r\n\r\n" + smuggled)
+            out = self.raw(req)
+            self.assertEqual(out.count(b"HTTP/1.1 "), 1, (path, out))
+
+    def test_pool_cache_keyed_on_direction(self):
+        res = self.mp.Resolver(TOKENS["tokens"], 1000)
+        fwd = {"dex": "ociswap", "component": "component_foo_oci", "base": "XRD", "quote": "FOO"}
+        rev = {"dex": "ociswap", "component": "component_foo_oci", "base": "FOO", "quote": "XRD"}
+        self.assertAlmostEqual(float(res.pool(fwd)), 100.0)
+        self.assertAlmostEqual(float(res.pool(rev)), 0.01)
+
     def test_restart_loads_latest(self):
         s2 = self.mp.Store(os.environ["DB_PATH"])
         self.assertIn(XRD, s2.latest)
