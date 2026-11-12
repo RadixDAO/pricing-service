@@ -349,3 +349,26 @@ describe("off-chain XRD sources", () => {
     expect(state.xrd?.sources).toEqual(["mexc", "kucoin", "hUSDC@defiplaza"]);
   });
 });
+
+describe("an exchange disappears", () => {
+  it("alerts once a source has failed for 24 hours, and not before", async () => {
+    m.kucoin = 0.0003;
+    await cycle(T0);
+    m.kucoin = "down"; // KuCoin delists XRD
+    await cycle(T0 + 60);
+    for (let i = 0; i < S.alertOpenAfter; i++) await cycle(T0 + 23 * 3600 + 60 * i);
+    expect(m.issues.filter((x) => x.method === "POST" && x.path.endsWith("/issues"))).toHaveLength(0);
+    for (let i = 0; i < S.alertOpenAfter; i++) await cycle(T0 + 24 * 3600 + 120 + 60 * i);
+    const opened = m.issues.filter((x) => x.method === "POST" && x.path.endsWith("/issues"));
+    expect(opened).toHaveLength(1);
+    expect(opened[0].body.title).toMatch(/kucoin has failed for 24 hours/);
+  });
+
+  it("forgets a short outage once the source answers again", async () => {
+    m.kucoin = "down";
+    await cycle(T0);
+    m.kucoin = 0.0003;
+    const { state } = await cycle(T0 + 60);
+    expect(state.source_down_since).toEqual({});
+  });
+});

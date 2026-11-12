@@ -64,6 +64,8 @@ export interface Settings {
   maxLsus: number;
 
   /** Consecutive bad cycles before an alert issue is opened, and good cycles before it is closed. */
+  /** An XRD source failing this long raises an alert (it may have delisted XRD or closed). */
+  sourceDownAlertSecs: number;
   alertOpenAfter: number;
   alertCloseAfter: number;
 }
@@ -115,6 +117,7 @@ export function settings(env: Env): Settings {
     maxAddresses: num("MAX_ADDRESSES", 500),
     maxLsus: num("MAX_LSUS", 100),
 
+    sourceDownAlertSecs: num("SOURCE_DOWN_ALERT_SECS", 86400),
     alertOpenAfter: num("ALERT_OPEN_AFTER", 5),
     alertCloseAfter: num("ALERT_CLOSE_AFTER", 15),
   };

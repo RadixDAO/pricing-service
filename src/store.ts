@@ -22,6 +22,8 @@ export interface ServiceState {
   prices: Record<string, PriceEntry>;
   /** Symbols that had a healthy pool at the last successful Gateway read (Astrolescent may back these up). */
   pooled?: string[];
+  /** XRD source name -> unix seconds it started failing (absent while it works). */
+  source_down_since?: Record<string, number>;
   last_history_at?: number;
   last_prune_at?: number;
 }

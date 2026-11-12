@@ -226,6 +226,27 @@ export async function runCycle(db: D1Database, cfg: TokensFile, s: Settings, now
   // tokens' cross-checks depend on, is alerted on its own.
   const cgErr = off.errors.find((x) => x.startsWith("coingecko"));
   if (cgErr) alerts.set("source-coingecko", `CoinGecko unavailable: ${cgErr}`);
+  // A single exchange failing for a while is normal; failing for a day suggests it delisted
+  // XRD or closed, and should be replaced while the other sources still give a margin.
+  const downSince = { ...(st.source_down_since ?? {}) };
+  const answered = new Set(off.xrd.map((q) => q.source));
+  for (const name of s.xrdSources) {
+    if (answered.has(name)) {
+      delete downSince[name];
+      continue;
+    }
+    downSince[name] ??= now;
+    const hours = (now - downSince[name]) / 3600;
+    if (now - downSince[name] >= s.sourceDownAlertSecs) {
+      const err = off.errors.find((x) => x.startsWith(`${name}:`)) ?? "no answer";
+      alerts.set(
+        `source-down-${name}`,
+        `XRD source ${name} has failed for ${hours.toFixed(0)} hours (${err}); replace or remove it in XRD_SOURCES`,
+      );
+    }
+  }
+  for (const name of Object.keys(downSince)) if (!s.xrdSources.includes(name)) delete downSince[name];
+  st.source_down_since = downSince;
 
   // 5. Publish.
   const prices = { ...st.prices };
