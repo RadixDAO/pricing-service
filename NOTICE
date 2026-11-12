@@ -1,0 +1,7 @@
+RadixDAO pricing service
+Copyright 2026 RadixDAO and contributors
+
+This product includes software from radix-price-minimal
+(https://github.com/linuxx5046/radix-price-minimal) by linuxx5046,
+itself a rewrite of radixdlt/token-pricing-service
+(https://github.com/radixdlt/token-pricing-service).

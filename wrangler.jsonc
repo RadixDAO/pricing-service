@@ -20,5 +20,5 @@
     "ALERT_REPO": "RadixDAO/pricing-service"
   }
   // Custom domain on the RadixDAO zone; enable once the zone is on this account.
-  // "routes": [{ "pattern": "price.radixdao.org", "custom_domain": true }]
+  // "routes": [{ "pattern": "prices.radixdao.org", "custom_domain": true }]
 }
