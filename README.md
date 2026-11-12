@@ -86,7 +86,7 @@ npx wrangler secret put GITHUB_ALERT_TOKEN   # fine-grained token: Issues read/w
 npx wrangler deploy
 ```
 
-The custom domain `prices.radixdao.org` is set under `routes` in [wrangler.jsonc](wrangler.jsonc).
+The service runs at **https://prices.radixdao.org** (set under `routes` in [wrangler.jsonc](wrangler.jsonc)) and at https://radixdao-pricing-service.radixdao.workers.dev.
 
 ## Costs
 
