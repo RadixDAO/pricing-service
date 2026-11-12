@@ -44,7 +44,8 @@ export const XRD_SOURCES: Record<string, { url: string; parse: (d: any) => Parse
   },
   kucoin: {
     url: "https://api.kucoin.com/api/v1/market/orderbook/level1?symbol=XRD-USDT",
-    parse: (d) => ({ ...book(Number(d?.data?.bestBid), Number(d?.data?.bestAsk)), at: Number(d?.data?.time) / 1000 }),
+    // data.time is the last trade, which can be half an hour old for XRD; the book itself is live.
+    parse: (d) => book(Number(d?.data?.bestBid), Number(d?.data?.bestAsk)),
   },
   coinpaprika: {
     url: "https://api.coinpaprika.com/v1/tickers/radix-dlt",
