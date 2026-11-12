@@ -1,12 +1,13 @@
-# runtime data
+node_modules/
+.wrangler/
+.dev.vars
+.dev.vars.*
+*.log
+
+# Python reference implementation
 *.db
 *.db-wal
 *.db-shm
- 
-# local config with secrets (commit only minprice.env.example)
 minprice.env
- 
-# liquidity.py output
 tokens.pruned.json
- 
 __pycache__/

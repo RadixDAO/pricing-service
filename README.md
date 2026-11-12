@@ -1,105 +1,88 @@
-# minprice
+# RadixDAO pricing service
 
-A minimal Radix token price service. It is a single Python process: stdlib only, no `pip install`, SQLite for storage, and a background thread that recomputes prices every `INTERVAL_SECS`. Its JSON API is compatible with `radixdlt/token-pricing-service`, so the Radix Wallet can use it as a price source.
+Token prices in USD for the Radix Wallet, run by RadixDAO as a Cloudflare Worker. The API is compatible with the retired [radixdlt/token-pricing-service](https://github.com/radixdlt/token-pricing-service).
+
+The pricing logic comes from [linuxx5046/radix-price-minimal](https://github.com/linuxx5046/radix-price-minimal), a slimmed-down rewrite of the original service. Its Python version is kept in [reference/python](reference/python/) for comparison.
+
+## How it works
+
+A Cron Trigger runs a price cycle every minute:
+
+1. It fetches XRD/USD from CoinGecko and CoinPaprika, and every other token's CoinGecko price.
+2. It reads every pool in [tokens.json](tokens.json) from the Radix Gateway, in two batched transaction previews. It also reads each pool's balances to measure how deep the pool is.
+3. It checks the prices, as described in the next section.
+4. It stores the result in D1.
+
+API requests only read the stored prices. Wallet traffic never reaches the Gateway, except for LSU lookups, which are cached for 5 minutes. A cycle makes about 5 Gateway calls, however many people are using the Wallet.
+
+## How prices are checked
+
+The old service failed when a stablecoin lost its peg and when pools drained: it assumed every stablecoin was worth $1 and used any pool that answered. This service only publishes a price once it has been checked:
+
+- **XRD/USD needs two sources that agree, at least one of them off-chain.** The sources are CoinGecko, CoinPaprika, and the hUSDC pool on DefiPlaza treated as $1. On-chain pools alone can never set the XRD price, because on Radix they are cheap to move. If only one off-chain source is reachable, its price is accepted only when it is within 10% of a price validated in the last hour.
+- **Stablecoins are never assumed to be $1.** Each stablecoin pool's price is checked against the validated XRD price. A stablecoin is shown at its real market price, and if it is more than 10% off its peg, an alert is raised.
+- **Pools must be deep enough.** A pool holding less than `MIN_POOL_DEPTH_USD` (default $100, adjustable per token with `min_depth_usd`) is not used. For DefiPlaza pools, a $10 test trade must also show a buy/sell spread under 25%. When a token has several pools, pools that disagree with the deepest one are dropped.
+- **CoinGecko and pools must agree.** If a token's CoinGecko price and its pool price differ by more than 10%, the price is withdrawn. For a bridged token, CoinGecko quotes the underlying coin and can't see a broken bridge. The exception is tokens marked `coingecko_only`, which use CoinGecko.
+- **Large jumps wait for confirmation.** If XRD moves more than 15% in one minute, the move is published only after the next cycle confirms it.
+- **When checks fail, prices are withdrawn.** The last validated price is served for up to 15 minutes. After that the token gets no price, so the Wallet shows nothing rather than a wrong value.
+
+Problems lasting 5 minutes open a GitHub issue labelled `price-alert`. The issue closes automatically 15 minutes after the problem has cleared.
+
+All thresholds are in [src/settings.ts](src/settings.ts) and can be overridden with Worker variables.
+
+## API
 
 | Endpoint | Notes |
 |---|---|
-| `POST /price/tokens` (and `-legacy`) | `{"currency":"USD","tokens":[...],"lsus":[...]}` → `{"tokens":[...],"lsus":[...]}` |
-| `POST /price/historicalPrice` (and `-legacy`) | Requires the `x-api-key` header. Returns the closest sample within ±1 day; 424 if any token is missing. |
-| `POST /tokens` | Configured tokens with their current price. |
-| `GET /healthz` | Returns 503 if the last successful cycle is older than 5 × the interval. |
+| `POST /price/tokens` (and `-legacy`) | `{"currency":"USD","tokens":[...],"lsus":[...]}` → `{"tokens":[...],"lsus":[...]}`. Up to 500 tokens and 100 LSUs per request. |
+| `POST /price/historicalPrice` (and `-legacy`) | Needs the `x-api-key` header. Returns the sample closest to `timestamp` within ±1 day; 424 if any token has none. History starts at launch. |
+| `POST /tokens` | Configured tokens with a current price. |
+| `GET /healthz` | Returns `Ok`, `Degraded` (prices are being served but something needs attention) or `Stale`, plus the list of current issues. Returns 503 when no price has been validated in the last 5 minutes. |
 
-Prices are computed with the same algorithm as the original `ledger_current_price` DAG:
+## Adding or removing a token
 
-1. The USD/XRD price comes from stablecoin anchor pools (`usd_anchors`), taking the median across all anchor pools.
-2. A token's ledger price is the average over its pools.
-3. Tokens with a `coingecko_id` are blended as `weight × CoinGecko + (1 − weight) × ledger`, with a divergence check and an expiring CoinGecko cache.
+Edit [tokens.json](tokens.json) in a pull request. CI checks that the file is valid. A maintainer reviews and merges it, and the merge redeploys the service.
 
-## Configuration (environment)
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `GATEWAY_URL` | `https://mainnet.radixdlt.com` | Gateway API used for previews and LSU lookups. A local Gateway also works. |
-| `COINGECKO_URL` | `https://api.coingecko.com/api/v3` | Set it to an empty string to disable CoinGecko. |
-| `TOKENS_FILE` | `tokens.json` | Token/pool list. It is reloaded automatically when it changes. |
-| `DB_PATH` | `minprice.db` | SQLite file, created automatically. |
-| `HOST` / `PORT` | `127.0.0.1` / `8000` | Listen address. Keep it on localhost and put a reverse proxy or tunnel in front. |
-| `API_KEY` | empty | Key for `/price/historicalPrice`; when empty that endpoint is disabled. Generate one with `openssl rand -hex 24`. |
-| `INTERVAL_SECS` | `60` | Price cycle period. |
-| `HISTORY_EVERY_SECS` | `300` | How often a history row is stored. |
-| `RETENTION_DAYS` | `400` | History older than this is purged once a day. |
-| `PLAZA_PROBE_QUOTE` | `100` | DefiPlaza probe size, in quote-token units. |
-| `LOG_LEVEL` | `INFO` | Set it to `DEBUG` to log every HTTP request. |
-
-## 1. Choose tokens and pools
-
-`tokens.json` lists the tokens and pools to track. Measure them against the Gateway:
-
-```bash
-python3 liquidity.py                                                   # price + approx. TVL per pool
-python3 liquidity.py --min-tvl-xrd 500000 --write tokens.pruned.json   # drop pools below the threshold
+```jsonc
+"SYMBOL": {
+  "resource_address": "resource_rdx1…",
+  "coingecko_id": "optional-coingecko-id",
+  "pools": [
+    { "dex": "ociswap", "component": "component_rdx1…", "base": "XRD", "quote": "SYMBOL" }
+  ]
+}
 ```
 
-- The TVL column is approximate: 2 × the XRD held in the component's vaults plus any `pool_rdx1…` referenced in its state. For pools without XRD (TOKEN/DFP2) the quote side is valued at its XRD price.
-- If a pool prices fine but shows 0 XRD, the tool could not find its vaults; check that pool by hand before dropping it.
-- `usd_anchors` should list stablecoins whose pools agree with each other (for example `["hUSDC", "xUSDC"]`). A depegged or illiquid stablecoin must not be an anchor.
-- `--keep-cg-only` keeps tokens that have a `coingecko_id` even when none of their pools pass, so they are priced from CoinGecko only.
+- Supported DEXes are `ociswap` and `defiplaza`. C9 has shut down.
+- In each pool, one side must be the token itself. A pool without XRD must have the token as its `base`. It is then priced through its `quote` token.
+- Before proposing a pool, run `npm run probe` to see each pool's price, depth and spread on mainnet.
 
-### Supported DEXes
+## Development
 
-Each pool entry looks like `{"dex": ..., "component": ..., "base": ..., "quote": ...}`. `base` and `quote` are symbols defined in `tokens.json`, or `XRD`.
-
-- **`ociswap`** (`price_sqrt`) and **`c9`** (`get_price`): same logic as the original repository.
-- **`defiplaza`**: the price is read with `PlazaPair.quote()` in both directions (sell base and buy base) in a single preview. The result is the geometric mean of bid and ask, with the fee excluded. `get_state().p0` is used only to size the probe.
-  - Pairs may quote against DFP2 or against XRD. Always check with `liquidity.py`: it calls `get_tokens()` on every DefiPlaza pair and flags any base/quote mismatch.
-  - When the quote is not XRD, the price is converted through the quote token's own XRD price, so that token (for example DFP2) must be in `tokens.json` with working pools.
-  - For tokens with low divisibility, increase `PLAZA_PROBE_QUOTE` so the rounding inside `quote()` does not distort the price.
-
-Example:
-
-```json
-"ZAP": {"resource_address": "resource_rdx1…", "pools": [
-  {"dex": "defiplaza", "component": "component_rdx1…", "base": "ZAP", "quote": "DFP2"}]}
+```sh
+npm install
+npm test            # unit and end-to-end failure scenarios, in the Workers runtime
+npm run typecheck
+npm run probe       # measure every pool in tokens.json against mainnet
+npx wrangler d1 migrations apply pricing-service --local
+npm run dev         # local Worker; trigger a cycle with /__scheduled
 ```
 
-## 2. Run
+## Deployment
 
-```bash
-set -a; . ./minprice.env; set +a
-python3 minprice.py
-curl -s localhost:8000/healthz
-curl -s -X POST localhost:8000/price/tokens -H 'Content-Type: application/json' \
-  -d '{"currency":"USD","tokens":["resource_rdx1tknxxxxxxxxxradxrdxxxxxxxxx009923554798xxxxxxxxxradxrd"]}'
+Deployment needs a Cloudflare account with a D1 database:
+
+```sh
+npx wrangler d1 create pricing-service       # put the database_id in wrangler.jsonc
+npx wrangler d1 migrations apply pricing-service --remote
+npx wrangler secret put API_KEY              # for /price/historicalPrice
+npx wrangler secret put COINGECKO_API_KEY    # free CoinGecko demo key
+npx wrangler secret put GITHUB_ALERT_TOKEN   # fine-grained token: Issues read/write on this repo
+npx wrangler deploy
 ```
 
-### systemd
+The custom domain `price.radixdao.org` is set under `routes` in [wrangler.jsonc](wrangler.jsonc).
 
-```bash
-sudo useradd -r -s /usr/sbin/nologin minprice
-sudo install -d -o minprice /opt/minprice
-sudo install -m644 minprice.py tokens.json /opt/minprice/
-sudo install -m600 minprice.env.example /etc/minprice.env   # edit API_KEY etc.
-sudo install -m644 minprice.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now minprice
-journalctl -u minprice -f
-```
+## Costs
 
-The unit sets `ProtectHome=yes` and only allows writes to `/var/lib/minprice`, so keep `DB_PATH` there. It also caps the service at `MemoryMax=96M` and `CPUQuota=25%`.
-
-## 3. Expose it to the wallet
-
-The wallet requires HTTPS with a valid certificate. Keep minprice on `127.0.0.1` and choose one of these:
-
-- **Cloudflare Tunnel.** Works behind NAT or CGNAT without opening any port.
-  - For a quick test, run `cloudflared tunnel --url http://127.0.0.1:8000`. It prints a temporary `https://….trycloudflare.com` URL that changes on every run.
-  - For a fixed URL, use a named tunnel with your own domain.
-- **nginx + Let's Encrypt on a host with a public IP.** Use `proxy_pass http://127.0.0.1:8000` and obtain the certificate with `certbot --nginx`. This does not work behind CGNAT.
-- **A small VPS** running minprice directly (about 30 MB RSS), with nginx and TLS in front.
-
-Then add `https://YOUR_HOST/` as a token price service URL in the wallet.
-
-## Tests
-
-```bash
-python3 -m unittest -v test_minprice     # mocked Gateway and CoinGecko
-```
+About 1,440 database writes a day for state and 8,600 for history, which fits the free plan. On the free plan, a cron run gets 10 ms of CPU time. The cycle spends most of its time waiting on the network, but if the dashboard shows it hitting that limit, the $5/month paid plan raises it to 30 seconds.

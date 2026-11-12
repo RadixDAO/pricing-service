@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "radixdao-pricing-service",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "observability": { "enabled": true },
+  "triggers": { "crons": ["* * * * *"] },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "pricing-service",
+      // Set after `wrangler d1 create pricing-service` on the RAC Cloudflare account.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Defaults live in src/settings.ts; override here only when needed.
+  // Secrets (wrangler secret put): API_KEY, COINGECKO_API_KEY, GITHUB_ALERT_TOKEN
+  "vars": {
+    "ALERT_REPO": "RadixDAO/pricing-service"
+  }
+  // Custom domain on the RadixDAO zone; enable once the zone is on this account.
+  // "routes": [{ "pattern": "price.radixdao.org", "custom_domain": true }]
+}

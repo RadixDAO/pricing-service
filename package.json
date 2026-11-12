@@ -1,0 +1,30 @@
+{
+  "name": "radixdao-pricing-service",
+  "version": "1.0.0",
+  "description": "A minimal Radix token price service. It is a single Python process: stdlib only, no `pip install`, SQLite for storage, and a background thread that recomputes prices every `INTERVAL_SECS`. Its JSON API is compatible with `radixdlt/token-pricing-service`, so the Radix Wallet can use it as a price source.",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p . && tsc -p scripts",
+    "dev": "wrangler dev --test-scheduled",
+    "probe": "tsx scripts/probe.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RadixDAO/pricing-service.git"
+  },
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/RadixDAO/pricing-service/issues"
+  },
+  "homepage": "https://github.com/RadixDAO/pricing-service#readme",
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.8.1",
+    "@cloudflare/workers-types": "5.20261112.1",
+    "@types/node": "26.6.6",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "4.1.12",
+    "wrangler": "4.158.0"
+  },
+  "private": true
+}
