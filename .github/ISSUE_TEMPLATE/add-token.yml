@@ -11,7 +11,7 @@ body:
         **Pool requirements**
         - The token must trade in a pool against **XRD** (or against a token already on the list).
         - Each pool must hold at least **$100** of liquidity (both sides together).
-        - Supported pools: **Ociswap Flex pools** (the usual kind), also Ociswap Precision and Basic pools, and **DefiPlaza** pairs.
+        - Supported pools: **Ociswap Flex pools** (the usual kind), also Ociswap Precision and Basic pools, and **DefiPlaza** pairs. Pools on other DEXes can't be priced yet.
   - type: input
     attributes:
       label: Symbol
@@ -35,9 +35,9 @@ body:
     attributes:
       label: Pools
       description: |
-        **Easiest: leave this empty.** The check then finds the token's Ociswap pools by itself and uses the ones with at least $100 of liquidity.
+        **Easiest: leave this empty.** The check then finds the token's pools on Ociswap and DefiPlaza by itself and uses the ones with at least $100 of liquidity.
 
-        To choose the pools yourself, open each pool on ociswap.com, copy the link from the browser's address bar and paste it here, **one pool per line**. The pool's address (`component_rdx1…`) on its own works too. Don't paste the token's address (`resource_rdx1…`) here.
+        To choose the pools yourself, open each pool on ociswap.com, copy the link from the browser's address bar and paste it here, **one pool per line**. A pool's address (`component_rdx1…`) on its own works too, which is how to give a DefiPlaza pair. Don't paste the token's address (`resource_rdx1…`) here.
 
         Example, two pools:
         ```

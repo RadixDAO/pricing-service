@@ -99,7 +99,8 @@ export function parseRequest(body: string, labels: string[]): TokenRequest | { e
 const COMPONENT_RE = /component_rdx1[0-9a-z]{54}/;
 const RESOURCE_RE = /resource_rdx1[0-9a-z]{54}/;
 const OCISWAP_API = "https://api.ociswap.com";
-const MAX_DISCOVERED = 3;
+const DEFIPLAZA_API = "https://radix.defiplaza.net";
+const MAX_DISCOVERED = 4;
 
 // ---------------------------------------------------------------- results
 
@@ -339,40 +340,70 @@ export async function completePools(req: AddRequest, cfg: TokensFile, d: Deps): 
   return { pools: out, checks };
 }
 
+interface FoundPool {
+  dex: "Ociswap" | "DefiPlaza";
+  address: string;
+  type: string;
+  tvl: number;
+  /** The pool's other token. */
+  other: string;
+}
+
+/** Ociswap: GET /pools?token_address= returns the token's pools with x/y tokens and TVL. */
+async function ociswapPools(resource: string, d: Deps): Promise<FoundPool[]> {
+  const r = await d.fetchFn(`${OCISWAP_API}/pools?token_address=${encodeURIComponent(resource)}&limit=100`, { signal: AbortSignal.timeout(d.s.httpTimeoutMs) });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const all: any[] = ((await r.json()) as any)?.data ?? [];
+  return all.flatMap((p) => {
+    const x = p?.x?.token?.address;
+    const y = p?.y?.token?.address;
+    const other = x === resource ? y : y === resource ? x : undefined;
+    return other ? [{ dex: "Ociswap" as const, address: String(p?.address ?? ""), type: String(p?.pool_type ?? p?.blueprint_name ?? "pool"), tvl: Number(p?.total_value_locked?.usd?.now ?? 0), other: String(other) }] : [];
+  });
+}
+
+/** DefiPlaza: GET /api/pairs lists every pair (about 150) with base/quote tokens and TVL. */
+async function defiplazaPools(resource: string, d: Deps): Promise<FoundPool[]> {
+  const r = await d.fetchFn(`${DEFIPLAZA_API}/api/pairs`, { signal: AbortSignal.timeout(d.s.httpTimeoutMs) });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const all: any[] = ((await r.json()) as any)?.data ?? [];
+  return all.flatMap((p) => {
+    const other = p?.baseToken === resource ? p?.quoteToken : p?.quoteToken === resource ? p?.baseToken : undefined;
+    return other ? [{ dex: "DefiPlaza" as const, address: String(p?.address ?? ""), type: "pair", tvl: Number(p?.tvlUSD ?? 0), other: String(other) }] : [];
+  });
+}
+
 /**
- * Find a token's pools through Ociswap's public API, for requests that leave Pools empty. Only the
- * pool addresses are taken from it; tokens, order, price and depth are then read from the ledger.
- * Keeps up to MAX_DISCOVERED pools that pair with XRD or a listed token and that Ociswap reports
- * at or above the depth minimum, deepest first.
+ * Find a token's pools on the supported DEXes (Ociswap and DefiPlaza), for requests that leave
+ * Pools empty. Only the pool addresses are taken from the DEX APIs; tokens, order, price and depth
+ * are then read from the ledger. Keeps up to MAX_DISCOVERED pools, deepest first, that pair with
+ * XRD or a listed token and that the DEX reports at or above the depth minimum. One DEX API being
+ * down is reported but does not stop the other's pools from being used.
  */
 export async function discoverPools(req: AddRequest, cfg: TokensFile, minDepth: number, d: Deps): Promise<{ pools: PoolLine[]; check: Check }> {
   const name = "Pools found";
   const known = new Set<string>([XRD, ...Object.values(cfg.tokens).map((t) => t.resource_address)]);
-  const r = await d.fetchFn(`${OCISWAP_API}/pools?token_address=${encodeURIComponent(req.resource_address)}&limit=100`, {
-    signal: AbortSignal.timeout(d.s.httpTimeoutMs),
-  });
-  if (!r.ok) throw new Error(`Ociswap API HTTP ${r.status}`);
-  const all: any[] = ((await r.json()) as any)?.data ?? [];
-  const found = all
-    .map((p) => {
-      const x = p?.x?.token?.address;
-      const y = p?.y?.token?.address;
-      const other = x === req.resource_address ? y : y === req.resource_address ? x : undefined;
-      return { address: String(p?.address ?? ""), type: String(p?.pool_type ?? p?.blueprint_name ?? "?"), tvl: Number(p?.total_value_locked?.usd?.now ?? 0), other };
-    })
-    .filter((p) => COMPONENT_RE.test(p.address) && p.other);
-  const usable = found.filter((p) => known.has(p.other!) && p.tvl >= minDepth).sort((a, b) => b.tvl - a.tvl);
-  const list = (ps: typeof found) => ps.map((p) => `${p.type} $${Math.round(p.tvl).toLocaleString("en-US")}`).join(", ");
+  const sources = [
+    ["Ociswap", ociswapPools],
+    ["DefiPlaza", defiplazaPools],
+  ] as const;
+  const results = await Promise.allSettled(sources.map(([, f]) => f(req.resource_address, d)));
+  const failed = results.flatMap((r, i) => (r.status === "rejected" ? [`${sources[i][0]} (${errMsg(r.reason)})`] : []));
+  if (failed.length === sources.length) throw new Error(`no DEX answered: ${failed.join(", ")}`);
+  const found = results.flatMap((r) => (r.status === "fulfilled" ? r.value : [])).filter((p) => COMPONENT_RE.test(p.address));
+  const usable = found.filter((p) => known.has(p.other) && p.tvl >= minDepth).sort((a, b) => b.tvl - a.tvl);
+  const list = (ps: FoundPool[]) => ps.map((p) => `${p.dex} ${p.type} $${Math.round(p.tvl).toLocaleString("en-US")}`).join(", ");
+  const down = failed.length ? ` (could not ask ${failed.join(", ")}; edit the issue later to retry)` : "";
   if (usable.length === 0) {
     const detail = found.length
-      ? `none of the token's ${found.length} Ociswap pool(s) holds $${minDepth} or more and pairs with XRD or a listed token (${list(found)}). Add liquidity, or list a DefiPlaza pool in the Pools field, then edit the issue to retry.`
-      : `Ociswap has no pools for this token. List a DefiPlaza pool in the Pools field, or add liquidity on Ociswap, then edit the issue to retry.`;
+      ? `none of the token's ${found.length} pool(s) on Ociswap and DefiPlaza holds $${minDepth} or more and pairs with XRD or a listed token (${list(found)})${down}. Add liquidity, then edit the issue to retry.`
+      : `no pools for this token on Ociswap or DefiPlaza${down}. Only these two DEXes can be priced.`;
     return { pools: [], check: { name, ok: false, detail } };
   }
   const chosen = usable.slice(0, MAX_DISCOVERED);
   return {
     pools: chosen.map((p) => ({ component: p.address })),
-    check: { name, ok: true, detail: `using ${chosen.length} Ociswap pool(s) with at least $${minDepth} (by Ociswap's figures): ${list(chosen)}${found.length > chosen.length ? `; ${found.length - chosen.length} other(s) skipped` : ""}` },
+    check: { name, ok: true, detail: `using ${chosen.length} pool(s) with at least $${minDepth} (by the DEXes' own figures): ${list(chosen)}${found.length > chosen.length ? `; ${found.length - chosen.length} other(s) skipped` : ""}${down}` },
   };
 }
 
@@ -404,7 +435,7 @@ export async function checkAdd(req: AddRequest, cfg: TokensFile, d: Deps): Promi
       checks.push(found.check);
       req = { ...req, pools: found.pools };
     } catch (e) {
-      add("Pools found", false, `could not look up the token's pools on Ociswap: ${errMsg(e)}. Edit the issue to retry, or paste the pool links.`);
+      add("Pools found", false, `could not look up the token's pools: ${errMsg(e)}. Edit the issue to retry, or paste the pool links.`);
     }
     if (checks.some((c) => !c.ok)) return done(summary);
   }

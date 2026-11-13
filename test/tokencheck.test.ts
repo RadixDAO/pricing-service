@@ -181,7 +181,7 @@ describe("pools as links, and no pools at all", () => {
     const r = await checkAdd(req, TOKENS, d);
     expect(r.ok).toBe(true);
     expect(r.tokens?.tokens.HYDR.pools.map((p) => p.component)).toEqual([NEW_POOL]);
-    expect(r.checks[1].detail).toMatch(/using 1 Ociswap pool.*2 other\(s\) skipped/);
+    expect(r.checks[1].detail).toMatch(/using 1 pool\(s\).*Ociswap flex \$1,200; 2 other\(s\) skipped/);
   });
 
   it("skips a found pool that fails on the ledger, keeping the good one", async () => {
@@ -197,13 +197,38 @@ describe("pools as links, and no pools at all", () => {
     expect(resultMarkdown(r, addReq(""))).toMatch(/⏭️ .*skipped: .*below the \$100 minimum/);
   });
 
-  it("fails clearly when no pool is deep enough or Ociswap is down", async () => {
+  it("also finds DefiPlaza pairs, still using Ociswap's pools when DefiPlaza is down and vice versa", async () => {
+    const plaza = addr("component", "hydrplaza");
+    m.plaza[plaza] = { p0: 0.5, spread: 0.01, xrd: 2_000_000, holds: { [NEW]: 4_000_000 }, tokens: [NEW, XRD_ADDR] };
+    m.blueprints[plaza] = "PlazaPair";
+    m.ociApi = [{ address: NEW_POOL, x: NEW, y: XRD_ADDR, tvl: 1200 }];
+    m.plazaApi = [
+      { address: plaza, base: NEW, quote: XRD_ADDR, tvl: 1300 },
+      { address: C.husdcPlaza, base: A.hUSDC, quote: XRD_ADDR, tvl: 2000 }, // another token's pair: ignored
+    ];
+    const r = await checkAdd(addReq(""), TOKENS, d);
+    expect(r.ok).toBe(true);
+    expect(r.tokens?.tokens.HYDR.pools).toEqual([
+      { dex: "defiplaza", component: plaza, base: "HYDR", quote: "XRD", blueprint_name: "PlazaPair" },
+      { dex: "ociswap", component: NEW_POOL, base: "XRD", quote: "HYDR", blueprint_name: "BasicPool" },
+    ]);
+
+    m.plazaApi = "down";
+    const r2 = await checkAdd(addReq(""), TOKENS, d);
+    expect(r2.tokens?.tokens.HYDR.pools.map((p) => p.dex)).toEqual(["ociswap"]);
+    expect(r2.checks[1].detail).toMatch(/could not ask DefiPlaza/);
+  });
+
+  it("fails clearly when no pool is deep enough or no DEX answers", async () => {
     m.ociApi = [{ address: NEW_POOL, x: NEW, y: XRD_ADDR, tvl: 60 }];
     const r = await checkAdd(addReq(""), TOKENS, d);
     expect(r.ok).toBe(false);
-    expect(r.checks.at(-1)?.detail).toMatch(/none of the token's 1 Ociswap pool/);
+    expect(r.checks.at(-1)?.detail).toMatch(/none of the token's 1 pool\(s\) on Ociswap and DefiPlaza/);
+    m.ociApi = [];
+    expect((await checkAdd(addReq(""), TOKENS, d)).checks.at(-1)?.detail).toMatch(/no pools for this token on Ociswap or DefiPlaza/);
     m.ociApi = "down";
-    expect((await checkAdd(addReq(""), TOKENS, d)).checks.at(-1)?.detail).toMatch(/could not look up/);
+    m.plazaApi = "down";
+    expect((await checkAdd(addReq(""), TOKENS, d)).checks.at(-1)?.detail).toMatch(/could not look up.*no DEX answered/);
   });
 });
 

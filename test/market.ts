@@ -93,6 +93,8 @@ export interface Market {
   blueprints: Record<string, string>;
   /** Ociswap's public API: pools listed per token (x, y = resource addresses, tvl in USD). */
   ociApi: Array<{ address: string; x: string; y: string; tvl: number; type?: string }> | "down";
+  /** DefiPlaza's public API: all pairs (base, quote = resource addresses, tvl in USD). */
+  plazaApi: Array<{ address: string; base: string; quote: string; tvl: number }> | "down";
   /** unix seconds the simulated sources stamp their quotes with */
   now: number;
   calls: string[];
@@ -126,6 +128,7 @@ export function healthyMarket(): Market {
     resources: {},
     blueprints: {},
     ociApi: [],
+    plazaApi: [],
     now: 1_800_000_000,
     calls: [],
     issues: [],
@@ -180,6 +183,10 @@ export function marketFetch(m: Market): typeof fetch {
         .filter((p) => p.x === t || p.y === t)
         .map((p) => ({ address: p.address, pool_type: p.type ?? "flex", total_value_locked: { usd: { now: String(p.tvl) } }, x: { token: { address: p.x } }, y: { token: { address: p.y } } }));
       return ok({ data, next_cursor: 0 });
+    }
+    if (url.host === "radix.defiplaza.net") {
+      if (m.plazaApi === "down") return new Response("down", { status: 503 });
+      return ok({ data: m.plazaApi.map((p) => ({ address: p.address, baseToken: p.base, quoteToken: p.quote, tvlUSD: p.tvl })), message: "ok" });
     }
     if (url.host === "api.github.com") {
       m.issues.push({ method: init?.method ?? "GET", path: url.pathname, body });
