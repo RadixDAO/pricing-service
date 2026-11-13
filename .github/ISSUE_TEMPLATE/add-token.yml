@@ -8,7 +8,10 @@ body:
       value: |
         After you submit, an automated check reads the token and its pools from Radix mainnet and posts the result here. If everything passes, it opens a pull request; a RadixDAO maintainer reviews and merges it, and the merge puts the token live.
 
-        A pool is only used when it holds at least **$100** of liquidity (both sides together). Supported DEXes: **ociswap** and **defiplaza**.
+        **Pool requirements**
+        - The token must trade in a pool against **XRD** (or against a token already on the list).
+        - Each pool must hold at least **$100** of liquidity (both sides together).
+        - Supported pools: **Ociswap Flex pools** (the usual kind), also Ociswap Precision and Basic pools, and **DefiPlaza** pairs.
   - type: input
     attributes:
       label: Symbol
@@ -24,18 +27,26 @@ body:
   - type: input
     attributes:
       label: Resource address
-      placeholder: resource_rdx1…
+      description: The token's address, starting with `resource_rdx1`. You can also paste the token's link from ociswap.com or the Radix Dashboard.
+      placeholder: resource_rdx1t5lenm5rr0p7urmcfjpzq5syt7cpges3wv3hzefckqe49ga6wutrhf
     validations:
       required: true
   - type: textarea
     attributes:
       label: Pools
       description: |
-        Paste each pool's **component address**, one per line. The DEX, the two tokens and their order are detected from the ledger. The other token must be XRD or an already listed token. (You can also write a line as `dex component base quote`.)
-      placeholder: component_rdx1…
-      render: text
-    validations:
-      required: true
+        **Easiest: leave this empty.** The check then finds the token's Ociswap pools by itself and uses the ones with at least $100 of liquidity.
+
+        To choose the pools yourself, open each pool on ociswap.com, copy the link from the browser's address bar and paste it here, **one pool per line**. The pool's address (`component_rdx1…`) on its own works too. Don't paste the token's address (`resource_rdx1…`) here.
+
+        Example, two pools:
+        ```
+        https://ociswap.com/pools/component_rdx1cpcwm3w254rjc74xpqjcla08tjd6ms3eyzc5yfmhuwuha6vas0dr2c
+        component_rdx1cpj25l4f8v2n4xl2auhwsagwmt5mmxsavxttmkpl90cr2qnyejqcmt
+        ```
+      placeholder: |
+        Leave empty to find the pools automatically, or paste one pool link per line, e.g.
+        https://ociswap.com/pools/component_rdx1cpcwm3w254rjc74xpqjcla08tjd6ms3eyzc5yfmhuwuha6vas0dr2c
   - type: input
     attributes:
       label: CoinGecko ID

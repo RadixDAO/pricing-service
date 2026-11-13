@@ -153,6 +153,60 @@ ociswap ${NEW_POOL} XRD HYDR`), TOKENS, d);
   });
 });
 
+describe("pools as links, and no pools at all", () => {
+  const XRD_ADDR = TOKENS.tokens.XRD.resource_address;
+
+  it("takes the address out of an Ociswap link, for pools and the resource", async () => {
+    const req = addReq(`https://ociswap.com/pools/${NEW_POOL}`, { "Resource address": `https://ociswap.com/tokens/${NEW}` });
+    expect(req.pools).toEqual([{ component: NEW_POOL }]);
+    expect(req.resource_address).toBe(NEW);
+    expect((await checkAdd(req, TOKENS, d)).ok).toBe(true);
+  });
+
+  it("explains a token address pasted as a pool", () => {
+    const r = parseRequest(body({ Symbol: "HYDR", "Resource address": NEW, Pools: NEW }), ["add-token"]);
+    expect((r as { error: string }).error).toMatch(/token address .* not a pool/);
+  });
+
+  it("finds the pools on Ociswap when Pools is empty, skipping thin and unrelated ones", async () => {
+    const thin = addr("component", "hydrthin");
+    const other = addr("component", "hydrother");
+    m.ociApi = [
+      { address: thin, x: NEW, y: XRD_ADDR, tvl: 40 },
+      { address: NEW_POOL, x: NEW, y: XRD_ADDR, tvl: 1200 },
+      { address: other, x: NEW, y: addr("resource", "unlisted"), tvl: 5000 },
+    ];
+    const req = addReq("");
+    expect(req.discover).toBe(true);
+    const r = await checkAdd(req, TOKENS, d);
+    expect(r.ok).toBe(true);
+    expect(r.tokens?.tokens.HYDR.pools.map((p) => p.component)).toEqual([NEW_POOL]);
+    expect(r.checks[1].detail).toMatch(/using 1 Ociswap pool.*2 other\(s\) skipped/);
+  });
+
+  it("skips a found pool that fails on the ledger, keeping the good one", async () => {
+    const drained = addr("component", "hydrdrained");
+    m.oci[drained] = { raw: 0.5, xrd: 10_000, holds: { [NEW]: 20_000 } }; // $6 on the ledger
+    m.ociApi = [
+      { address: drained, x: NEW, y: XRD_ADDR, tvl: 9000 }, // Ociswap's figure is stale
+      { address: NEW_POOL, x: NEW, y: XRD_ADDR, tvl: 1200 },
+    ];
+    const r = await checkAdd(addReq(""), TOKENS, d);
+    expect(r.ok).toBe(true);
+    expect(r.tokens?.tokens.HYDR.pools.map((p) => p.component)).toEqual([NEW_POOL]);
+    expect(resultMarkdown(r, addReq(""))).toMatch(/⏭️ .*skipped: .*below the \$100 minimum/);
+  });
+
+  it("fails clearly when no pool is deep enough or Ociswap is down", async () => {
+    m.ociApi = [{ address: NEW_POOL, x: NEW, y: XRD_ADDR, tvl: 60 }];
+    const r = await checkAdd(addReq(""), TOKENS, d);
+    expect(r.ok).toBe(false);
+    expect(r.checks.at(-1)?.detail).toMatch(/none of the token's 1 Ociswap pool/);
+    m.ociApi = "down";
+    expect((await checkAdd(addReq(""), TOKENS, d)).checks.at(-1)?.detail).toMatch(/could not look up/);
+  });
+});
+
 describe("remove requests", () => {
   it("removes a token nothing depends on", () => {
     const r = checkRemove({ kind: "remove", symbol: "BAR", reason: "x" }, TOKENS);

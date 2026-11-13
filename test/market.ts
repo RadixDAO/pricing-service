@@ -91,6 +91,8 @@ export interface Market {
   resources: Record<string, { type?: string; symbol?: string }>;
   /** Blueprint name per Ociswap component (default BasicPool). */
   blueprints: Record<string, string>;
+  /** Ociswap's public API: pools listed per token (x, y = resource addresses, tvl in USD). */
+  ociApi: Array<{ address: string; x: string; y: string; tvl: number; type?: string }> | "down";
   /** unix seconds the simulated sources stamp their quotes with */
   now: number;
   calls: string[];
@@ -123,6 +125,7 @@ export function healthyMarket(): Market {
     gatewayStatus: 502,
     resources: {},
     blueprints: {},
+    ociApi: [],
     now: 1_800_000_000,
     calls: [],
     issues: [],
@@ -169,6 +172,14 @@ export function marketFetch(m: Market): typeof fetch {
         };
       }
       return new Response(JSON.stringify(entries, null, 1), { status: 200 });
+    }
+    if (url.host === "api.ociswap.com") {
+      if (m.ociApi === "down") return new Response("down", { status: 503 });
+      const t = url.searchParams.get("token_address");
+      const data = m.ociApi
+        .filter((p) => p.x === t || p.y === t)
+        .map((p) => ({ address: p.address, pool_type: p.type ?? "flex", total_value_locked: { usd: { now: String(p.tvl) } }, x: { token: { address: p.x } }, y: { token: { address: p.y } } }));
+      return ok({ data, next_cursor: 0 });
     }
     if (url.host === "api.github.com") {
       m.issues.push({ method: init?.method ?? "GET", path: url.pathname, body });

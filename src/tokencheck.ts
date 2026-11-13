@@ -32,6 +32,8 @@ export interface AddRequest {
   resource_address: string;
   pools: PoolLine[];
   coingecko_id?: string;
+  /** No pools given: find the token's Ociswap pools and keep those that pass. */
+  discover?: boolean;
 }
 export interface RemoveRequest {
   kind: "remove";
@@ -67,27 +69,37 @@ export function parseRequest(body: string, labels: string[]): TokenRequest | { e
   }
   if (!labels.includes("add-token")) return { error: "the issue needs the add-token or remove-token label" };
   const symbol = get(FIELDS.symbol);
-  const resource = get(FIELDS.resource);
+  const resourceText = get(FIELDS.resource);
   if (!symbol) return { error: `missing "${FIELDS.symbol}"` };
-  if (!resource) return { error: `missing "${FIELDS.resource}"` };
+  if (!resourceText) return { error: `missing "${FIELDS.resource}"` };
+  // Accept the bare address or anything containing it (an Ociswap or dashboard link).
+  const resource = resourceText.match(RESOURCE_RE)?.[0] ?? resourceText;
   const pools: PoolLine[] = [];
   const lines = get(FIELDS.pools).split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
-  if (lines.length > MAX_POOLS) return { error: `at most ${MAX_POOLS} pools per request` };
   for (const [i, line] of lines.entries()) {
     const w = line.split(/[\s,]+/).filter(Boolean);
-    if (w.length === 1) pools.push({ component: w[0] });
-    else if (w.length === 4) {
+    const components = [...line.matchAll(new RegExp(COMPONENT_RE, "g"))].map((x) => x[0]);
+    if (w.length === 4 && /^(ociswap|defiplaza)$/i.test(w[0])) {
       const [dex, component, base, quote] = w;
       pools.push({ dex: dex.toLowerCase() as PoolConfig["dex"], component, base, quote });
+    } else if (components.length) {
+      for (const component of components) pools.push({ component });
+    } else if (RESOURCE_RE.test(line)) {
+      return { error: `pool line ${i + 1} is a token address (resource_rdx1…), not a pool. Paste the pool's link from ociswap.com (it looks like https://ociswap.com/pools/component_rdx1…), or leave Pools empty to find the pools automatically.` };
     } else {
-      return { error: `pool line ${i + 1} should be the pool's component address (or "dex component base quote"), got: ${line.slice(0, 120)}` };
+      return { error: `pool line ${i + 1} has no pool address. Paste the pool's link from ociswap.com (it looks like https://ociswap.com/pools/component_rdx1…), or leave Pools empty to find the pools automatically. Got: ${line.slice(0, 120)}` };
     }
   }
-  if (pools.length === 0) return { error: `"${FIELDS.pools}" needs at least one pool` };
+  if (pools.length > MAX_POOLS) return { error: `at most ${MAX_POOLS} pools per request` };
   const name = get(FIELDS.name) || undefined;
   const coingecko_id = get(FIELDS.coingecko) || undefined;
-  return { kind: "add", symbol, name, resource_address: resource, pools, coingecko_id };
+  return { kind: "add", symbol, name, resource_address: resource, pools, coingecko_id, ...(pools.length ? {} : { discover: true }) };
 }
+
+const COMPONENT_RE = /component_rdx1[0-9a-z]{54}/;
+const RESOURCE_RE = /resource_rdx1[0-9a-z]{54}/;
+const OCISWAP_API = "https://api.ociswap.com";
+const MAX_DISCOVERED = 3;
 
 // ---------------------------------------------------------------- results
 
@@ -327,6 +339,43 @@ export async function completePools(req: AddRequest, cfg: TokensFile, d: Deps): 
   return { pools: out, checks };
 }
 
+/**
+ * Find a token's pools through Ociswap's public API, for requests that leave Pools empty. Only the
+ * pool addresses are taken from it; tokens, order, price and depth are then read from the ledger.
+ * Keeps up to MAX_DISCOVERED pools that pair with XRD or a listed token and that Ociswap reports
+ * at or above the depth minimum, deepest first.
+ */
+export async function discoverPools(req: AddRequest, cfg: TokensFile, minDepth: number, d: Deps): Promise<{ pools: PoolLine[]; check: Check }> {
+  const name = "Pools found";
+  const known = new Set<string>([XRD, ...Object.values(cfg.tokens).map((t) => t.resource_address)]);
+  const r = await d.fetchFn(`${OCISWAP_API}/pools?token_address=${encodeURIComponent(req.resource_address)}&limit=100`, {
+    signal: AbortSignal.timeout(d.s.httpTimeoutMs),
+  });
+  if (!r.ok) throw new Error(`Ociswap API HTTP ${r.status}`);
+  const all: any[] = ((await r.json()) as any)?.data ?? [];
+  const found = all
+    .map((p) => {
+      const x = p?.x?.token?.address;
+      const y = p?.y?.token?.address;
+      const other = x === req.resource_address ? y : y === req.resource_address ? x : undefined;
+      return { address: String(p?.address ?? ""), type: String(p?.pool_type ?? p?.blueprint_name ?? "?"), tvl: Number(p?.total_value_locked?.usd?.now ?? 0), other };
+    })
+    .filter((p) => COMPONENT_RE.test(p.address) && p.other);
+  const usable = found.filter((p) => known.has(p.other!) && p.tvl >= minDepth).sort((a, b) => b.tvl - a.tvl);
+  const list = (ps: typeof found) => ps.map((p) => `${p.type} $${Math.round(p.tvl).toLocaleString("en-US")}`).join(", ");
+  if (usable.length === 0) {
+    const detail = found.length
+      ? `none of the token's ${found.length} Ociswap pool(s) holds $${minDepth} or more and pairs with XRD or a listed token (${list(found)}). Add liquidity, or list a DefiPlaza pool in the Pools field, then edit the issue to retry.`
+      : `Ociswap has no pools for this token. List a DefiPlaza pool in the Pools field, or add liquidity on Ociswap, then edit the issue to retry.`;
+    return { pools: [], check: { name, ok: false, detail } };
+  }
+  const chosen = usable.slice(0, MAX_DISCOVERED);
+  return {
+    pools: chosen.map((p) => ({ component: p.address })),
+    check: { name, ok: true, detail: `using ${chosen.length} Ociswap pool(s) with at least $${minDepth} (by Ociswap's figures): ${list(chosen)}${found.length > chosen.length ? `; ${found.length - chosen.length} other(s) skipped` : ""}` },
+  };
+}
+
 // ---------------------------------------------------------------- add / remove
 
 export async function checkAdd(req: AddRequest, cfg: TokensFile, d: Deps): Promise<CheckResult> {
@@ -348,12 +397,26 @@ export async function checkAdd(req: AddRequest, cfg: TokensFile, d: Deps): Promi
   if (req.symbol === "XRD" || cfg.usd_anchors.includes(req.symbol)) add("Symbol", false, `${req.symbol} cannot be changed through a request`);
   if (checks.some((c) => !c.ok)) return done(summary);
 
+  // No pools given: find them on Ociswap.
+  if (req.discover) {
+    try {
+      const found = await discoverPools(req, cfg, existing?.min_depth_usd ?? d.s.minPoolDepthUsd, d);
+      checks.push(found.check);
+      req = { ...req, pools: found.pools };
+    } catch (e) {
+      add("Pools found", false, `could not look up the token's pools on Ociswap: ${errMsg(e)}. Edit the issue to retry, or paste the pool links.`);
+    }
+    if (checks.some((c) => !c.ok)) return done(summary);
+  }
+
   // Pools given only as a component address: detect DEX, tokens and their order.
   let pools: PoolConfig[];
   try {
     const det = await completePools(req, cfg, d);
-    checks.push(...det.checks);
+    // A found pool that cannot be used is skipped, not a failure of the request.
+    checks.push(...det.checks.map((c) => (req.discover && !c.ok ? { ...c, ok: true, detail: `skipped: ${c.detail}` } : c)));
     pools = det.pools;
+    if (pools.length === 0) add("Pools", false, "no usable pool");
   } catch (e) {
     add("Pools", false, `could not read the pools from the Gateway: ${errMsg(e)}. Edit the issue to retry.`);
     return done(summary);
@@ -405,17 +468,32 @@ export async function checkAdd(req: AddRequest, cfg: TokensFile, d: Deps): Promi
     add("Pools", false, `could not read pools from the Gateway: ${errMsg(e)}. Edit the issue to retry.`);
     return done(summary);
   }
-  const healthy = [];
+  let healthy = [];
   for (const a of assessed.values()) {
     const probs = judge(a, minDepth, d.s);
     const price = a.xrdPerToken !== undefined ? `${usd(a.xrdPerToken * xrd.value)}` : "no price";
     const depth = a.depthUsd !== undefined ? `, depth $${Math.round(a.depthUsd).toLocaleString("en-US")}` : "";
-    add(`Pool ${a.pool.dex} ${short(a.pool.component)}`, probs.length === 0, probs.length ? probs.join("; ") : `${price}${depth}`);
+    const label = `Pool ${a.pool.dex} ${short(a.pool.component)}`;
+    if (probs.length && req.discover) add(label, true, `skipped: ${probs.join("; ")}`);
+    else add(label, probs.length === 0, probs.length ? probs.join("; ") : `${price}${depth}`);
     if (probs.length === 0 && a.xrdPerToken !== undefined) healthy.push({ key: poolKey(a.pool), xrdPerToken: a.xrdPerToken, depthUsd: a.depthUsd ?? 0 });
   }
   if (healthy.length > 1) {
     const c = combinePools(healthy, d.s.poolAgreeTol);
-    add("Pools agree", c.dropped.length === 0, c.dropped.length ? `these pools differ more than ${d.s.poolAgreeTol * 100}% from the deepest: ${c.dropped.map((k) => short(k.split("|")[0])).join(", ")}` : `within ${d.s.poolAgreeTol * 100}%`);
+    const off = c.dropped.map((k) => short(k.split("|")[0])).join(", ");
+    if (c.dropped.length && req.discover) {
+      add("Pools agree", true, `skipped ${off}: more than ${d.s.poolAgreeTol * 100}% from the deepest pool`);
+      healthy = healthy.filter((h) => !c.dropped.includes(h.key));
+    } else add("Pools agree", c.dropped.length === 0, c.dropped.length ? `these pools differ more than ${d.s.poolAgreeTol * 100}% from the deepest: ${off}` : `within ${d.s.poolAgreeTol * 100}%`);
+  }
+  if (req.discover) {
+    // Keep only the found pools that passed.
+    const keep = new Set(healthy.map((h) => h.key));
+    token.pools = token.pools.filter((p) => keep.has(poolKey(p)));
+    if (token.pools.length === 0) {
+      add("Pools", false, `none of the pools found passed the checks above. Add liquidity, or paste a pool link in the Pools field, then edit the issue to retry.`);
+      return done(summary);
+    }
   }
 
   // 4. CoinGecko, when given: must exist and agree with the pools.
@@ -495,7 +573,7 @@ export function resultMarkdown(r: CheckResult, req: TokenRequest, runUrl?: strin
   const head = r.ok
     ? `✅ **All checks passed.** A pull request with the change has been opened; a maintainer reviews and merges it, and the merge deploys the service.`
     : `❌ **Some checks failed.** Edit this issue to fix the request; the checks run again automatically.`;
-  const rows = r.checks.map((c) => `| ${c.ok ? "✅" : "❌"} | ${c.name} | ${c.detail.replace(/\|/g, "\\|").replace(/\n/g, " ")} |`);
+  const rows = r.checks.map((c) => `| ${!c.ok ? "❌" : c.detail.startsWith("skipped") ? "⏭️" : "✅"} | ${c.name} | ${c.detail.replace(/\|/g, "\\|").replace(/\n/g, " ")} |`);
   return [
     `### ${r.summary}`,
     "",
