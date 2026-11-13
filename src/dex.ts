@@ -14,28 +14,53 @@ export interface PoolReading {
 export const poolKey = (p: PoolConfig) => `${p.component}|${p.base}|${p.quote}`;
 
 /**
+ * A DefiPlaza PlazaPair's p0 (quote per base) and token addresses, read from its component state.
+ * Older PlazaPair packages on mainnet have no get_state/get_tokens methods, but every version
+ * stores these fields, so the state works for all of them.
+ */
+export function plazaState(state: any): { p0?: number; base?: string; quote?: string } {
+  const fields: any[] = state?.fields ?? [];
+  const named = (name: string) => fields.find((f) => f?.field_name === name);
+  const pairState = named("state");
+  const p0 = Number((pairState?.fields ?? []).find((f: any) => f?.field_name === "p0")?.value);
+  return {
+    p0: p0 > 0 && isFinite(p0) ? p0 : undefined,
+    base: named("base_address")?.value,
+    quote: named("quote_address")?.value,
+  };
+}
+
+/**
  * @param probeQuoteUnits size of the DefiPlaza probe trade, in units of the pair's quote token;
  *        receives the pool and p0 (quote per base). Return undefined to use the default of 100.
+ * @param states component states (from `holdings`); DefiPlaza pairs with p0 in their state skip
+ *        the get_state call, which older PlazaPair packages do not have.
  */
 export async function readPools(
   gw: Gateway,
   epoch: number,
   pools: PoolConfig[],
   probeQuoteUnits: (p: PoolConfig, spot: Map<string, number>) => number | undefined,
+  states?: Map<string, any>,
 ): Promise<Map<string, PoolReading>> {
   const out = new Map<string, PoolReading>();
   const comps = [...new Map(pools.map((p) => [p.component, p])).values()];
+  const ociRaw = new Map<string, number>();
+  const plazaP0 = new Map<string, number>();
+  const errors = new Map<string, string>();
+  for (const p of comps) {
+    const p0 = p.dex === "defiplaza" ? plazaState(states?.get(p.component)).p0 : undefined;
+    if (p0 !== undefined) plazaP0.set(p.component, p0);
+  }
 
-  // Stage A: spot price (Ociswap) or pair state (DefiPlaza), one call per component.
-  const stageA: Call[] = comps.map((p) => ({
+  // Stage A: spot price (Ociswap) or pair state (DefiPlaza, unless known), one call per component.
+  const needA = comps.filter((p) => !plazaP0.has(p.component));
+  const stageA: Call[] = needA.map((p) => ({
     component: p.component,
     method: p.dex === "ociswap" ? "price_sqrt" : "get_state",
   }));
   const resA = await batchCalls(gw, epoch, stageA);
-  const ociRaw = new Map<string, number>();
-  const plazaP0 = new Map<string, number>();
-  const errors = new Map<string, string>();
-  comps.forEach((p, i) => {
+  needA.forEach((p, i) => {
     const r = resA[i];
     try {
       if (!r.ok) throw new Error(r.error);

@@ -98,6 +98,8 @@ export interface EntityHoldings {
   amounts: Map<string, number>;
   /** native pool_rdx1… addresses referenced in the component state */
   refs: string[];
+  /** The component's state as the Gateway returns it (programmatic JSON), if any. */
+  state?: any;
 }
 
 /** Fungible balances (Global aggregation) for components and the native pools they reference. */
@@ -114,7 +116,7 @@ export async function holdings(gw: Gateway, addresses: string[]): Promise<Map<st
         const amounts = new Map<string, number>();
         for (const r of it.fungible_resources?.items ?? []) if ("amount" in r) amounts.set(r.resource_address, Number(r.amount));
         const state = JSON.stringify(it.details?.state ?? {});
-        out.set(it.address, { amounts, refs: [...new Set(state.match(POOL_RE) ?? [])] });
+        out.set(it.address, { amounts, refs: [...new Set(state.match(POOL_RE) ?? [])], state: it.details?.state });
       }
     }
   };

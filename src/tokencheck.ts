@@ -5,7 +5,7 @@
  */
 import { type PoolConfig, type TokenConfig, type TokensFile, validateTokensFile, XRD } from "./config";
 import { combinePools, xrdConsensus, type XrdCandidate } from "./consensus";
-import { poolKey, readPools } from "./dex";
+import { plazaState, poolKey, readPools } from "./dex";
 import { batchCalls, errMsg, type FetchFn, type Gateway, getEpoch, holdings } from "./gateway";
 import { fetchOffchain } from "./offchain";
 import type { Settings } from "./settings";
@@ -174,12 +174,18 @@ export async function assessPools(pools: PoolConfig[], cfg: TokensFile, xrdUsd: 
 
   const epoch = await getEpoch(d.gw);
   const probeXrd = d.s.plazaProbeUsd / xrdUsd;
-  const [readings, hold] = await Promise.all([
-    readPools(d.gw, epoch, all, (p, spot) => (p.quote === "XRD" ? probeXrd : spot.get(p.quote) ? probeXrd / spot.get(p.quote)! : undefined)),
-    holdings(d.gw, all.map((p) => p.component)),
-  ]);
+  const hold = await holdings(d.gw, all.map((p) => p.component));
+  const states = new Map([...hold].map(([a, h]) => [a, h.state]));
+  const readings = await readPools(d.gw, epoch, all, (p, spot) => (p.quote === "XRD" ? probeXrd : spot.get(p.quote) ? probeXrd / spot.get(p.quote)! : undefined), states);
+  // DefiPlaza token pair: from the component state (all versions), else get_tokens.
   const plaza = pools.filter((p) => p.dex === "defiplaza");
-  const plazaTokens = await batchCalls(d.gw, epoch, plaza.map((p) => ({ component: p.component, method: "get_tokens" })));
+  const needTokens = plaza.filter((p) => !plazaState(states.get(p.component)).base);
+  const tokenRes = await batchCalls(d.gw, epoch, needTokens.map((p) => ({ component: p.component, method: "get_tokens" })));
+  const plazaTokens = plaza.map((p) => {
+    const st = plazaState(states.get(p.component));
+    if (st.base && st.quote) return { ok: true as const, value: { fields: [{ value: st.base }, { value: st.quote }] } };
+    return tokenRes[needTokens.indexOf(p)];
+  });
 
   const amountsOf = (component: string) => {
     const m = new Map<string, number>();
@@ -276,11 +282,20 @@ export async function completePools(req: AddRequest, cfg: TokensFile, d: Deps): 
   const valid = pending.filter((c) => /^component_rdx1[0-9a-z]{54}$/.test(c));
   const details = valid.length ? await d.gw.post("/state/entity/details", { addresses: valid, aggregation_level: "Global" }) : { items: [] };
   const blueprintOf = new Map<string, string>(details.items.map((it: any) => [it.address, it.details?.blueprint_name]));
+  const stateOf = new Map<string, any>(details.items.map((it: any) => [it.address, it.details?.state]));
   const hold = await holdings(d.gw, valid);
   const epoch = await getEpoch(d.gw);
-  const calls = valid.map((c) => ({ component: c, method: BLUEPRINT_DEX[blueprintOf.get(c) ?? ""] === "defiplaza" ? "get_tokens" : "price_sqrt" }));
-  const results = await batchCalls(d.gw, epoch, calls);
-  const resultOf = new Map(valid.map((c, i) => [c, results[i]]));
+  // DefiPlaza pairs: tokens from the component state when present (older PlazaPair packages have
+  // no get_tokens); otherwise ask get_tokens. Ociswap: price_sqrt.
+  const resultOf = new Map<string, { ok: true; value: any } | { ok: false; error: string }>();
+  const need: string[] = [];
+  for (const c of valid) {
+    const st = BLUEPRINT_DEX[blueprintOf.get(c) ?? ""] === "defiplaza" ? plazaState(stateOf.get(c)) : {};
+    if (st.base && st.quote) resultOf.set(c, { ok: true, value: { fields: [{ value: st.base }, { value: st.quote }] } });
+    else need.push(c);
+  }
+  const results = await batchCalls(d.gw, epoch, need.map((c) => ({ component: c, method: BLUEPRINT_DEX[blueprintOf.get(c) ?? ""] === "defiplaza" ? "get_tokens" : "price_sqrt" })));
+  need.forEach((c, i) => resultOf.set(c, results[i]));
 
   const out: PoolConfig[] = [];
   for (const [i, line] of req.pools.entries()) {

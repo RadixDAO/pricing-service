@@ -62,6 +62,21 @@ describe("healthy market", () => {
     // 4 here; 5 on mainnet, where DefiPlaza pairs reference native pools (one more holdings call).
     expect(m.calls.filter((c) => c.startsWith("gateway.test")).length).toBeLessThanOrEqual(5);
   });
+
+  it("prices an older-package DefiPlaza pair (no get_state) from its component state, without failed previews", async () => {
+    m.plaza[C.husdcPlaza].legacy = true;
+    m.plaza[C.husdcPlaza].tokens = [A.hUSDC, XRD];
+    const { state, log } = await cycle(T0);
+    expect(state.xrd?.sources, log.join("\n")).toEqual(["coingecko", "mexc", "hUSDC@defiplaza"]);
+    expect((await priced(T0))[A.hUSDC]).toBeCloseTo(1, 2);
+    expect(m.calls.filter((c) => c === "gateway.test/transaction/preview").length).toBe(2); // stage A + B, no retries
+  });
+
+  it("falls back to get_state when the Gateway returns no component state", async () => {
+    m.plaza[C.husdcPlaza].noState = true;
+    const { state } = await cycle(T0);
+    expect(state.xrd?.sources).toEqual(["coingecko", "mexc", "hUSDC@defiplaza"]);
+  });
 });
 
 describe("the old oracle's failure: a stablecoin loses its peg", () => {

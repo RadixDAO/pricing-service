@@ -76,15 +76,20 @@ export async function runCycle(db: D1Database, cfg: TokensFile, s: Settings, now
     const gw = makeGateway(s.gatewayUrl, fetchFn, s.httpTimeoutMs);
     const epoch = await getEpoch(gw);
     const probeXrd = roughXrdUsd ? s.plazaProbeUsd / roughXrdUsd : undefined;
-    [readings, hold] = await Promise.all([
-      readPools(gw, epoch, allPools, (p, spot) => {
+    // Holdings first: their component states give DefiPlaza pairs' p0 without a get_state call.
+    hold = await holdings(gw, allPools.map((p) => p.component));
+    readings = await readPools(
+      gw,
+      epoch,
+      allPools,
+      (p, spot) => {
         if (!probeXrd) return undefined;
         if (p.quote === "XRD") return probeXrd;
         const x = spot.get(p.quote);
         return x ? probeXrd / x : undefined;
-      }),
-      holdings(gw, allPools.map((p) => p.component)),
-    ]);
+      },
+      new Map([...hold].map(([a, h]) => [a, h.state])),
+    );
   } catch (e) {
     gatewayDown = true;
     issues.push(`Radix Gateway unavailable: ${errMsg(e)}`);

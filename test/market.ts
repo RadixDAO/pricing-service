@@ -71,6 +71,10 @@ export interface PlazaPool {
   holds?: Record<string, number>;
   /** (base, quote) resource addresses returned by get_tokens */
   tokens?: [string, string];
+  /** An older PlazaPair package: no get_state/get_tokens methods (the state still has the data). */
+  legacy?: boolean;
+  /** The Gateway returns no component state for it (forces the get_state/get_tokens path). */
+  noState?: boolean;
 }
 
 export interface Market {
@@ -138,6 +142,25 @@ export function healthyMarket(): Market {
 const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
 const dec = (v: number) => ({ kind: "Decimal", value: String(v) });
 
+/** A PlazaPair's component state, shaped like the Gateway's programmatic JSON. */
+function plazaStateJson(p: PlazaPool | undefined): unknown {
+  if (!p || p.noState) return {};
+  return {
+    kind: "Tuple",
+    type_name: "PlazaPair",
+    fields: [
+      { kind: "Tuple", field_name: "config", fields: [] },
+      { kind: "Tuple", field_name: "state", fields: [{ kind: "Decimal", field_name: "p0", value: String(p.p0) }] },
+      ...(p.tokens
+        ? [
+            { kind: "Reference", field_name: "base_address", value: p.tokens[0] },
+            { kind: "Reference", field_name: "quote_address", value: p.tokens[1] },
+          ]
+        : []),
+    ],
+  };
+}
+
 export function marketFetch(m: Market): typeof fetch {
   return async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
@@ -201,6 +224,9 @@ export function marketFetch(m: Market): typeof fetch {
       for (const [, comp, method, args] of String(body.manifest).matchAll(/Address\("([^"]+)"\)\n"([^"]+)"\n?(.*?);/gs)) {
         const plaza = m.plaza[comp];
         if (plaza) {
+          if (plaza.legacy && (method === "get_tokens" || method === "get_state")) {
+            return ok({ receipt: { status: "Failed", error_message: "SystemError(TypeCheckError(BlueprintPayloadDoesNotExist(...)))" } });
+          }
           if (method === "get_tokens") {
             const [b, q] = plaza.tokens ?? ["?", "?"];
             outs.push({ programmatic_json: { kind: "Tuple", fields: [{ kind: "Reference", value: b }, { kind: "Reference", value: q }] } });
@@ -234,7 +260,7 @@ export function marketFetch(m: Market): typeof fetch {
               address: a,
               details: res
                 ? { type: res.type ?? "FungibleResource" }
-                : { state: {}, blueprint_name: m.plaza[a] ? "PlazaPair" : m.oci[a] ? (m.blueprints[a] ?? "BasicPool") : undefined },
+                : { state: plazaStateJson(m.plaza[a]), blueprint_name: m.plaza[a] ? "PlazaPair" : m.oci[a] ? (m.blueprints[a] ?? "BasicPool") : undefined },
               metadata: { items: res?.symbol ? [{ key: "symbol", value: { typed: { type: "String", value: res.symbol } } }] : [] },
               fungible_resources: { items: Object.entries(held).map(([r, v]) => ({ resource_address: r, amount: String(v) })) },
             };

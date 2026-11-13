@@ -219,6 +219,15 @@ describe("pools as links, and no pools at all", () => {
     expect(r2.checks[1].detail).toMatch(/could not ask DefiPlaza/);
   });
 
+  it("detects and prices a pair from an older DefiPlaza package (no get_state/get_tokens)", async () => {
+    const plaza = addr("component", "hydrplazaold");
+    m.plaza[plaza] = { p0: 0.5, spread: 0.01, xrd: 2_000_000, holds: { [NEW]: 4_000_000 }, tokens: [NEW, XRD_ADDR], legacy: true };
+    m.plazaApi = [{ address: plaza, base: NEW, quote: XRD_ADDR, tvl: 1300 }];
+    const r = await checkAdd(addReq(""), TOKENS, d);
+    expect(r.checks.filter((c) => !c.ok || c.detail.startsWith("skipped"))).toEqual([]);
+    expect(r.tokens?.tokens.HYDR.pools).toEqual([{ dex: "defiplaza", component: plaza, base: "HYDR", quote: "XRD", blueprint_name: "PlazaPair" }]);
+  });
+
   it("fails clearly when no pool is deep enough or no DEX answers", async () => {
     m.ociApi = [{ address: NEW_POOL, x: NEW, y: XRD_ADDR, tvl: 60 }];
     const r = await checkAdd(addReq(""), TOKENS, d);
