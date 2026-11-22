@@ -261,6 +261,7 @@ export const BLUEPRINT_DEX: Record<string, PoolConfig["dex"]> = {
   BasicPool: "ociswap",
   PrecisionPool: "ociswap",
   FlexPool: "ociswap",
+  Pool: "ociswap", // Ociswap Pool V2 (weighted pool; same price_sqrt as the others)
   PlazaPair: "defiplaza",
 };
 

@@ -124,6 +124,13 @@ describe("pools given as just a component address", () => {
     expect(r.checks.find((c) => c.name === "Pool line 1")?.detail).toMatch(/Ociswap FlexPool, XRD \/ HYDR \(detected\)/);
   });
 
+  it("accepts Ociswap Pool V2 (blueprint Pool)", async () => {
+    m.blueprints[NEW_POOL] = "Pool";
+    const r = await checkAdd(addReq(NEW_POOL), TOKENS, d);
+    expect(r.ok).toBe(true);
+    expect(r.tokens?.tokens.HYDR.pools[0]).toMatchObject({ dex: "ociswap", blueprint_name: "Pool" });
+  });
+
   it("detects the token as base when the pool quotes it that way", async () => {
     m.oci[NEW_POOL] = { raw: 2, xrd: 2_000_000, holds: { [NEW]: 4_000_000 } }; // 2 HYDR per XRD
     const r = await checkAdd(addReq(NEW_POOL), TOKENS, d);
